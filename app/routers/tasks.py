@@ -5,7 +5,7 @@ from app.services.task_manager import get_task
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
 
-@router.get("/{task_id}")
+@router.get("/{task_id}", summary="Poll async task status and log")
 async def task_status(task_id: str):
     task = await get_task(task_id)
     if not task:

@@ -17,8 +17,11 @@ class Settings(BaseSettings):
     # SSH settings (used by SSHGameLauncher)
     ssh_host: str = ""
     ssh_user: str = ""
-    ssh_key_path: str = ""
-    ssh_unciv_jar_path: str = "~/Unciv.jar"
+    ssh_key_path: str = ""        # path to private key (optional)
+    ssh_password: str = ""        # password auth (optional, used if key not set)
+    ssh_sudo_password: str = ""   # sudo -S password on remote (if needed)
+    ssh_unciv_jar_path: str = "/var/civ_game/Unciv.jar"
+    ssh_unciv_work_dir: str = "/var/civ_game"
 
     # Map check thresholds (can be overridden by env)
     expect_min_distance: int = 10

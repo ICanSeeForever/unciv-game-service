@@ -15,7 +15,7 @@ from app.services.task_manager import (
     update_task,
 )
 
-router = APIRouter(prefix="/games", tags=["games"])
+router = APIRouter(prefix="/games", tags=["games"], responses={404: {"description": "Game not found"}})
 
 _GAME_ID_RE = re.compile(r"^[0-9a-f-]{32,}$", re.IGNORECASE)
 
@@ -29,8 +29,11 @@ def _validate_game_id(game_id: str) -> None:
 # GET /games/{game_id}/info  — lightweight: currentPlayer + turns
 # ---------------------------------------------------------------------------
 
-@router.get("/{game_id}/info")
-async def game_info(game_id: str, mp_server_url: str | None = Query(default=None)):
+@router.get("/{game_id}/info", summary="Current player and turn number")
+async def game_info(
+    game_id: str,
+    mp_server_url: str | None = Query(default=None, description="Unciv MP server URL override"),
+):
     _validate_game_id(game_id)
     try:
         save = await get_save_dict(game_id, mp_server_url)
@@ -47,14 +50,14 @@ async def game_info(game_id: str, mp_server_url: str | None = Query(default=None
 # GET /games/{game_id}/map-check  — full map quality check
 # ---------------------------------------------------------------------------
 
-@router.get("/{game_id}/map-check")
+@router.get("/{game_id}/map-check", summary="Check map quality (distances, luxuries, marine civs, land ratio)")
 async def map_check(
     game_id: str,
-    mp_server_url: str | None = Query(default=None),
-    min_distance: int | None = Query(default=None),
-    max_distance: int | None = Query(default=None),
-    min_luxuries: int | None = Query(default=None),
-    min_unique_luxuries: int | None = Query(default=None),
+    mp_server_url: str | None = Query(default=None, description="Unciv MP server URL override"),
+    min_distance: int | None = Query(default=None, description="Override minimum distance between start positions"),
+    max_distance: int | None = Query(default=None, description="Override maximum distance between start positions"),
+    min_luxuries: int | None = Query(default=None, description="Override minimum total luxuries in radius"),
+    min_unique_luxuries: int | None = Query(default=None, description="Override minimum unique luxury types"),
 ):
     _validate_game_id(game_id)
     try:
@@ -75,8 +78,8 @@ async def map_check(
 # GET /games/{game_id}/save  — full parsed save dict
 # ---------------------------------------------------------------------------
 
-@router.get("/{game_id}/save")
-async def game_save(game_id: str, mp_server_url: str | None = Query(default=None)):
+@router.get("/{game_id}/save", summary="Full parsed save file (large response)")
+async def game_save(game_id: str, mp_server_url: str | None = Query(default=None, description="Unciv MP server URL override")):
     _validate_game_id(game_id)
     try:
         return await get_save_dict(game_id, mp_server_url)
@@ -88,7 +91,7 @@ async def game_save(game_id: str, mp_server_url: str | None = Query(default=None
 # GET /games/{game_id}/preview  — parsed preview file
 # ---------------------------------------------------------------------------
 
-@router.get("/{game_id}/preview")
+@router.get("/{game_id}/preview", summary="Parsed preview file (lightweight metadata)")
 async def game_preview(game_id: str):
     _validate_game_id(game_id)
     try:
@@ -107,7 +110,16 @@ class StartGameRequest(BaseModel):
     max_attempts: int | None = None
 
 
-@router.post("/start")
+@router.post(
+    "/start",
+    summary="Start game creation (async)",
+    description=(
+        "Launches Unciv.jar `--creategame` with the supplied config. "
+        "Returns a `task_id` immediately. The service retries until map check passes "
+        "or `max_attempts` is exhausted. Poll `GET /tasks/{task_id}` for progress."
+    ),
+    status_code=202,
+)
 async def start_game(body: StartGameRequest):
     task = await create_task()
     asyncio.create_task(_run_start_game(task, body))
