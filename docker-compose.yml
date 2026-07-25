@@ -1,0 +1,20 @@
+services:
+  unciv-game-service:
+    build: .
+    container_name: unciv-game-service
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    volumes:
+      # Mount the Unciv MultiplayerFiles directory
+      - ${CIV_PATH}:/data/unciv
+      # Mount static game data (cs, marine civs) — configure locally
+      - ./data:/service/data:ro
+    networks:
+      - civ_network
+
+networks:
+  civ_network:
+    external: true
