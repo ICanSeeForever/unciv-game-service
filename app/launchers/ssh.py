@@ -33,4 +33,5 @@ class SSHGameLauncher(GameLauncher):
                 check=True,
             )
             await conn.run(f"rm -f {remote_cfg}")
-            return result.stdout or ""
+            # Jar may print game id to stdout or stderr — return both
+            return (result.stdout or "") + (result.stderr or "")

@@ -168,6 +168,12 @@ async def _run_start_game(task, body: StartGameRequest) -> None:
 
 
 def _extract_game_id(output: str) -> str | None:
-    """Extract UUID from Unciv.jar output."""
-    m = re.search(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", output, re.IGNORECASE)
-    return m.group(0) if m else None
+    """Extract UUID from Unciv.jar output.
+
+    Unciv prints: 'Game started successfully with game id: <uuid>'
+    """
+    m = re.search(
+        r"Game started successfully with game id:\s*([a-f0-9-]+)",
+        output, re.IGNORECASE,
+    )
+    return m.group(1) if m else None
