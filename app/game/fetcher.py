@@ -1,5 +1,5 @@
 """Game file access: local MultiplayerFiles + MP server fetch."""
-import os
+import asyncio
 from pathlib import Path
 
 import httpx
@@ -61,3 +61,44 @@ def write_preview(game_id: str, raw: str) -> None:
     tmp = path.with_suffix(".tmp")
     tmp.write_text(raw, encoding="utf-8")
     tmp.rename(path)
+
+
+def _parse_game_file(path: Path) -> dict | None:
+    """Parse a single save file; return None on any error."""
+    try:
+        return decode_save(path.read_text(encoding="utf-8").strip())
+    except Exception:
+        return None
+
+
+async def list_all_games(exclude_civs: frozenset[str]) -> list[dict]:
+    """Scan MultiplayerFiles and return summary of every parseable game."""
+    base = Path(settings.civ_path) / "MultiplayerFiles"
+    if not base.is_dir():
+        return []
+
+    paths = [
+        p for p in base.iterdir()
+        if p.is_file() and not p.name.endswith("_Preview")
+    ]
+
+    loop = asyncio.get_event_loop()
+
+    async def _load(path: Path) -> dict | None:
+        game = await loop.run_in_executor(None, _parse_game_file, path)
+        if game is None:
+            return None
+        civs = [
+            c["civName"]
+            for c in game.get("civilizations", [])
+            if c.get("playerType") == "Human" and c.get("civName") not in exclude_civs
+        ]
+        return {
+            "game_id": path.name,
+            "current_player": game.get("currentPlayer"),
+            "turns": game.get("turns"),
+            "human_civs": civs,
+        }
+
+    results = await asyncio.gather(*[_load(p) for p in paths])
+    return [r for r in results if r is not None]

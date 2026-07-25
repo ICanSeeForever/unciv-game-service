@@ -6,7 +6,8 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from app.config import settings
-from app.game.fetcher import get_save_dict, get_preview_dict
+from app.game.fetcher import get_save_dict, get_preview_dict, list_all_games
+from app.game.static_data import CITY_STATES
 from app.launchers import get_launcher
 from app.services.map_checker import check_map
 from app.services.task_manager import (
@@ -23,6 +24,27 @@ _GAME_ID_RE = re.compile(r"^[0-9a-f-]{32,}$", re.IGNORECASE)
 def _validate_game_id(game_id: str) -> None:
     if not _GAME_ID_RE.match(game_id):
         raise HTTPException(status_code=400, detail="Invalid game_id format")
+
+
+# ---------------------------------------------------------------------------
+# GET /games  — list all local games
+# ---------------------------------------------------------------------------
+
+_EXCLUDE_FROM_HUMAN_LIST = CITY_STATES | frozenset({"Spectator", "Barbarians"})
+
+
+@router.get(
+    "",
+    summary="List all local games",
+    description=(
+        "Scans the mounted `CIV_PATH/MultiplayerFiles/` directory and returns a summary of every "
+        "parseable game: human civilizations (city-states and Spectator excluded), "
+        "current player, and turn number."
+    ),
+)
+async def list_games():
+    games = await list_all_games(exclude_civs=_EXCLUDE_FROM_HUMAN_LIST)
+    return {"count": len(games), "games": games}
 
 
 # ---------------------------------------------------------------------------
