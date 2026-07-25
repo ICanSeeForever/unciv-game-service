@@ -10,8 +10,6 @@ services:
     volumes:
       # Mount the Unciv MultiplayerFiles directory
       - ${CIV_PATH}:/data/unciv
-      # Mount static game data (cs, marine civs) — configure locally
-      - ./data:/service/data:ro
     networks:
       - civ_network
 

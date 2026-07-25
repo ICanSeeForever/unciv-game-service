@@ -1,5 +1,0 @@
-{
-  "_comment": "Configure cs (city-states) and marine civs for your mod. See civ_bot/data/static.json for values.",
-  "cs": [],
-  "marine": []
-}

@@ -32,9 +32,6 @@ class Settings(BaseSettings):
     # Task TTL: how long to keep completed/failed tasks (seconds)
     task_ttl: int = 3600
 
-    # Path to static game data (cs, marine civs)
-    static_data_path: str = "data/static.json"
-
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

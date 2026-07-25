@@ -1,9 +1,4 @@
 """Public game static data: city-states, marine civs, luxury resources."""
-import json
-from functools import lru_cache
-from pathlib import Path
-
-from app.config import settings
 
 # BNW + RekMOD luxury names — from public Unciv game data
 LUXURY_RESOURCES: frozenset[str] = frozenset({
@@ -15,22 +10,36 @@ LUXURY_RESOURCES: frozenset[str] = frozenset({
     "Tea", "Tobacco", "Truffles", "Whales", "Wine",
 })
 
+# Marine civilizations (benefit from coast start)
+MARINE_CIVS: frozenset[str] = frozenset({
+    "Australia", "Brunei", "Carthage", "Chile", "Denmark", "England",
+    "Indonesia", "Japan", "Kilwa", "Korea", "The Netherlands", "Norway",
+    "Oman", "Philippines", "Phoenicia", "Polynesia", "Portugal", "Spain",
+    "Tonga", "Venice",
+})
 
-@lru_cache(maxsize=1)
-def _load() -> dict:
-    path = Path(settings.static_data_path)
-    if not path.is_file():
-        return {"cs": [], "marine": []}
-    with open(path, encoding="utf-8") as f:
-        return json.load(f)
+# City-states and non-playable civs (excluded from player nation checks)
+CITY_STATES: frozenset[str] = frozenset({
+    "Baku", "Chaco Canyon", "Djibouti", "Kuala Lumpur", "Kuwait City",
+    "Kyzyl", "Ljubljana", "Luxembourg", "Monaco", "Montevideo", "Nicosia",
+    "Reykjavik", "Teheran", "Thimphu", "Bangkok", "Cape Town", "Islamabad",
+    "Kampala", "Lima", "Lusaka", "Mogadishu", "Ormus", "Panama City",
+    "Paramaribo", "Phnom Penh", "Port-au-Prince", "Riga", "Santo Domingo",
+    "Cahokia", "Colombo", "Dubai", "Gaborone", "Hong Kong", "Lagos",
+    "Malacca", "Maseru", "Mohenjo-Daro", "Singapore", "Tallinn", "Trieste",
+    "Vaduz", "Zurich", "Andorra", "Colchis", "Cyrene", "Harappa", "Havana",
+    "Tirana", "Troy", "Valletta", "Geneva", "Ife", "Kathmandu", "La Venta",
+    "Qufu", "Sarajevo", "Taipei", "Wittenberg",
+    "Spectator", "Barbarians",
+})
 
 
-def get_city_states() -> list[str]:
-    return _load().get("cs", [])
+def get_city_states() -> frozenset[str]:
+    return CITY_STATES
 
 
-def get_marine_civs() -> list[str]:
-    return _load().get("marine", [])
+def get_marine_civs() -> frozenset[str]:
+    return MARINE_CIVS
 
 
 def get_luxuries() -> frozenset[str]:
