@@ -18,7 +18,7 @@ jobs:
           key: ${{ secrets.DEPLOY_KEY }}
           script: |
             set -e
-            cd ~/unciv-game-service
+            cd /var/docker/compose/unciv-game-service
             git pull origin main
             docker compose build --no-cache
             docker compose up -d
