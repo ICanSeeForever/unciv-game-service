@@ -594,6 +594,245 @@ async def _run_start_game(task, body: StartGameRequest) -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# GET /games/{game_id}/snapshot  — all tracker data in one save read
+# ---------------------------------------------------------------------------
+
+_SEA_TRADE_ROUTE_PREFIX = "Sea Trade Route"
+_SKIP_SNAPSHOT_CIVS = frozenset({"Barbarians", "Spectator", "Spectators"})
+
+
+def _parse_stats(stats) -> dict:
+    """Parse Unciv statsHistory entry (dict or compact string like 'S123W45A67F89')."""
+    if isinstance(stats, dict):
+        return stats
+    result: dict[str, int] = {}
+    params = set("SNCPGTFHWA")
+    key = ""
+    val = ""
+    for ch in str(stats):
+        if ch in params:
+            if key and val:
+                result[key] = int(val)
+                val = ""
+            key = ch
+        else:
+            val += ch
+    if key and val:
+        result[key] = int(val)
+    return result
+
+
+def _extract_snapshot(save: dict) -> dict:
+    """Extract all tracker-relevant data in a single save scan."""
+    human_nations: list[str] = []
+    tech_by_nation: dict[str, list[str]] = {}
+    policies_by_nation: dict[str, list[str]] = {}
+    nations_status: list[dict] = []
+    city_buildings: list[dict] = []
+    capitals = _extract_capitals(save)
+
+    for civ in save.get("civilizations", []):
+        name = civ.get("civName")
+        if not name or name in _SKIP_SNAPSHOT_CIVS:
+            continue
+        player_type = civ.get("playerType", "AI")
+        is_human = player_type == "Human"
+        if is_human and name not in CITY_STATES:
+            human_nations.append(name)
+
+        cities = civ.get("cities") or []
+        city_count = len(cities)
+        founded_count = sum(1 for c in cities if c.get("foundingCiv") == name)
+
+        nations_status.append({
+            "name": name,
+            "player_type": player_type,
+            "city_count": city_count,
+            "founded_cities": founded_count,
+        })
+
+        tech = civ.get("tech") or {}
+        researched = tech.get("techsResearched") if isinstance(tech, dict) else []
+        tech_by_nation[name] = list(researched) if researched else []
+
+        policies = civ.get("policies") or {}
+        adopted = policies.get("adoptedPolicies") if isinstance(policies, dict) else []
+        policies_by_nation[name] = list(adopted) if adopted else []
+
+        if is_human:
+            for city in cities:
+                city_id = city.get("id")
+                if city_id is None:
+                    continue
+                constructions = city.get("cityConstructions") or {}
+                built = constructions.get("builtBuildings") if isinstance(constructions, dict) else []
+                city_buildings.append({
+                    "city_id": str(city_id),
+                    "owner": name,
+                    "city_name": str(city.get("name") or ""),
+                    "buildings": list(built) if built else [],
+                })
+
+    units = _extract_units(save)
+    human_set = set(human_nations)
+    human_units = [u for u in units if u.get("owner") in human_set]
+
+    sea_trade_routes: list[dict] = []
+    for tile in (save.get("tileMap") or {}).get("tileList") or []:
+        if not isinstance(tile, dict):
+            continue
+        improvement = tile.get("improvement")
+        if not improvement or not str(improvement).startswith(_SEA_TRADE_ROUTE_PREFIX):
+            continue
+        pos = tile.get("position") or {}
+        owner = str(tile.get("roadOwner") or tile.get("improvementOwner") or "").strip()
+        sea_trade_routes.append({
+            "owner": owner,
+            "route_name": str(improvement),
+            "terrain": str(tile.get("baseTerrain") or ""),
+            "x": pos.get("x"),
+            "y": pos.get("y"),
+        })
+
+    return {
+        "turns": int(save.get("turns") or 0),
+        "human_nations": human_nations,
+        "tech_by_nation": tech_by_nation,
+        "policies_by_nation": policies_by_nation,
+        "nations_status": nations_status,
+        "human_units": human_units,
+        "sea_trade_routes": sea_trade_routes,
+        "city_buildings": city_buildings,
+        "capitals": capitals,
+    }
+
+
+@router.get(
+    "/{game_id}/snapshot",
+    summary="Full tracker snapshot (one save read)",
+    description=(
+        "Returns all data needed by bot trackers in a single save parse: "
+        "human nations, techs, units, sea trade routes, city buildings, "
+        "capitals, and nation status (city count, founding info). "
+        "Replaces direct save reads in save_snapshot + capital_tracker."
+    ),
+)
+async def game_snapshot(
+    game_id: str,
+    mp_server_url: str | None = Query(default=None),
+):
+    _validate_game_id(game_id)
+    try:
+        save = await get_save_dict(game_id, mp_server_url)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    data = _extract_snapshot(save)
+    return {"game_id": game_id, **data}
+
+
+# ---------------------------------------------------------------------------
+# GET /games/{game_id}/veto  — veto rights computation
+# ---------------------------------------------------------------------------
+
+def _get_veto_from_param(stats_by_nation: dict, param: str, threshold: int) -> list[str]:
+    if not stats_by_nation:
+        return []
+    max_val = max(d.get(param, 0) for d in stats_by_nation.values())
+    return [n for n, d in stats_by_nation.items() if max_val - d.get(param, 0) <= threshold]
+
+
+def _compute_veto(save: dict) -> dict:
+    """Compute veto rights identical to bot's get_priority_minus."""
+    all_stats: dict[str, dict] = {}
+
+    for civ in save.get("civilizations", []):
+        name = civ.get("civName")
+        if not name or name in _SKIP_SNAPSHOT_CIVS or name in CITY_STATES:
+            continue
+        if civ.get("playerType") != "Human":
+            continue
+        if not civ.get("cities"):
+            continue
+        history = civ.get("statsHistory")
+        if not isinstance(history, dict) or not history:
+            continue
+        last_entry = history[next(reversed(history))]
+        stats = _parse_stats(last_entry)
+        all_stats[name] = {
+            "score": stats.get("S", 0),
+            "tech": stats.get("W", 0),
+            "cult": stats.get("A", 0),
+            "force": stats.get("F", 0),
+        }
+
+    veto_by_type: dict[str, list[str]] = {
+        "tech": _get_veto_from_param(all_stats, "tech", 3),
+        "cult": _get_veto_from_param(all_stats, "cult", 0),
+        "force": _get_veto_from_param(all_stats, "force", 0),
+        "score": _get_veto_from_param(all_stats, "score", 0),
+        "utopia": [],
+        "apollon": [],
+        "capitals": [],
+    }
+
+    for civ in save.get("civilizations", []):
+        name = civ.get("civName")
+        if not name or civ.get("playerType") != "Human" or not civ.get("cities"):
+            continue
+        for city in civ.get("cities") or []:
+            constructions = city.get("cityConstructions") or {}
+            if isinstance(constructions, dict):
+                if "Utopia Project" in (constructions.get("inProgressConstructions") or []):
+                    if name not in veto_by_type["utopia"]:
+                        veto_by_type["utopia"].append(name)
+                if "Apollo Program" in (constructions.get("builtBuildings") or []):
+                    if name not in veto_by_type["apollon"]:
+                        veto_by_type["apollon"].append(name)
+
+    for civ in save.get("civilizations", []):
+        name = civ.get("civName")
+        if not name or civ.get("playerType") != "Human" or not civ.get("cities"):
+            continue
+        cap_count = sum(
+            1 for city in civ.get("cities") or []
+            if city.get("isOriginalCapital")
+            and city.get("foundingCiv") not in (CITY_STATES | {None, ""})
+        )
+        if cap_count >= 3:
+            veto_by_type["capitals"].append(name)
+
+    veto_right_dict: dict[str, list[str]] = {}
+    for veto_type, nations in veto_by_type.items():
+        for nation in nations:
+            veto_right_dict.setdefault(nation, []).append(veto_type)
+
+    return {"veto": veto_right_dict, "stats": all_stats}
+
+
+@router.get(
+    "/{game_id}/veto",
+    summary="Compute veto rights for all human civs",
+    description=(
+        "Replicates the bot's get_priority_minus logic server-side. "
+        "Returns `veto` (nation → list of veto types) and `stats` "
+        "(score/tech/cult/force per nation from statsHistory). "
+        "Used by voting.py and capital_tracker."
+    ),
+)
+async def game_veto(
+    game_id: str,
+    mp_server_url: str | None = Query(default=None),
+):
+    _validate_game_id(game_id)
+    try:
+        save = await get_save_dict(game_id, mp_server_url)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    result = _compute_veto(save)
+    return {"game_id": game_id, **result}
+
+
 def _extract_game_id(output: str) -> str | None:
     """Extract UUID from Unciv.jar output.
 
