@@ -201,6 +201,223 @@ async def game_capitals(
 
 
 # ---------------------------------------------------------------------------
+# GET /games/{game_id}/units  — all units on the map (human civs only opt-in)
+# ---------------------------------------------------------------------------
+
+def _extract_units(save: dict) -> list:
+    """Return all units from tileList with owner, name, location, health, xp, promos."""
+    tiles = (save.get("tileMap") or {}).get("tileList") or []
+    units = []
+    for tile in tiles:
+        pos = tile.get("position") or {}
+        x, y = pos.get("x"), pos.get("y")
+        for key in ("civilianUnit", "militaryUnit"):
+            unit = tile.get(key)
+            if not isinstance(unit, dict):
+                continue
+            promotions = unit.get("promotions") or {}
+            if not isinstance(promotions, dict):
+                promotions = {}
+            xp = promotions.get("XP")
+            promo_names = promotions.get("promotions") or []
+            promo_count = promotions.get("numberOfPromotions")
+            health = unit.get("health")
+            units.append({
+                "id": unit.get("id"),
+                "name": unit.get("name"),
+                "owner": unit.get("owner") or unit.get("originalOwner"),
+                "x": x,
+                "y": y,
+                "health": int(health) if health is not None else 100,
+                "xp": int(xp) if xp is not None else 0,
+                "promotions": promo_names,
+                "promotion_count": int(promo_count) if promo_count is not None else 0,
+            })
+    return units
+
+
+@router.get(
+    "/{game_id}/units",
+    summary="All units on the map",
+    description=(
+        "Returns every unit on the tile map: owner, name, tile coordinates, health, "
+        "XP, and promotions. Use `owner` filter to get units of a specific civ."
+    ),
+)
+async def game_units(
+    game_id: str,
+    owner: str | None = Query(default=None, description="Filter by civ name"),
+    mp_server_url: str | None = Query(default=None, description="Unciv MP server URL override"),
+):
+    _validate_game_id(game_id)
+    try:
+        save = await get_save_dict(game_id, mp_server_url)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    units = _extract_units(save)
+    if owner:
+        units = [u for u in units if u["owner"] == owner]
+    return {"game_id": game_id, "count": len(units), "units": units}
+
+
+# ---------------------------------------------------------------------------
+# GET /games/{game_id}/cities  — cities for all or one civ
+# ---------------------------------------------------------------------------
+
+def _extract_cities(save: dict, nation: str | None = None) -> list:
+    """Return cities with owner, founding civ, location, and buildings count."""
+    result = []
+    for civ in save.get("civilizations", []):
+        owner = civ.get("civName")
+        if not owner or owner == "Barbarians":
+            continue
+        if nation and owner != nation:
+            continue
+        for city in civ.get("cities") or []:
+            loc = city.get("location") or {}
+            constructions = city.get("cityConstructions") or {}
+            built = constructions.get("builtBuildings") if isinstance(constructions, dict) else []
+            result.append({
+                "id": city.get("id"),
+                "name": city.get("name"),
+                "owner": owner,
+                "founding_civ": city.get("foundingCiv"),
+                "is_original_capital": bool(city.get("isOriginalCapital")),
+                "x": loc.get("x"),
+                "y": loc.get("y"),
+                "population": (city.get("population") or {}).get("population") if isinstance(city.get("population"), dict) else city.get("population"),
+                "built_buildings": built or [],
+            })
+    return result
+
+
+@router.get(
+    "/{game_id}/cities",
+    summary="All cities (optionally filtered by civ)",
+    description=(
+        "Returns all cities across all civs, or just one civ's cities via `?nation=`. "
+        "Includes founding civ, original-capital flag, population, and built buildings. "
+        "Used by irrelevant_guard to check if a civ lost half its founded cities."
+    ),
+)
+async def game_cities(
+    game_id: str,
+    nation: str | None = Query(default=None, description="Filter by civ name"),
+    mp_server_url: str | None = Query(default=None, description="Unciv MP server URL override"),
+):
+    _validate_game_id(game_id)
+    try:
+        save = await get_save_dict(game_id, mp_server_url)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    cities = _extract_cities(save, nation)
+    return {"game_id": game_id, "count": len(cities), "cities": cities}
+
+
+# ---------------------------------------------------------------------------
+# GET /games/{game_id}/diplomacy  — diplomatic relations between all civs
+# ---------------------------------------------------------------------------
+
+def _extract_diplomacy(save: dict) -> list:
+    """Return all war/peace relations between civs."""
+    result = []
+    seen = set()
+    for civ in save.get("civilizations", []):
+        nation = civ.get("civName")
+        if not nation or nation == "Barbarians":
+            continue
+        diplomacy = civ.get("diplomacy")
+        if not isinstance(diplomacy, dict):
+            continue
+        for key, row in diplomacy.items():
+            if not isinstance(row, dict):
+                continue
+            other = row.get("otherCivName") or key
+            if not other or other == "Barbarians":
+                continue
+            pair = tuple(sorted([nation, other]))
+            if pair in seen:
+                continue
+            seen.add(pair)
+            status = row.get("diplomaticStatus")
+            flags = row.get("flagsCountdown") or {}
+            at_war = status == "War" or (
+                isinstance(flags, dict) and "DeclaredWar" in flags
+            )
+            result.append({
+                "civ_a": nation,
+                "civ_b": other,
+                "status": status,
+                "at_war": at_war,
+            })
+    return result
+
+
+@router.get(
+    "/{game_id}/diplomacy",
+    summary="Diplomatic relations between all civilizations",
+    description=(
+        "Returns all civ-pair diplomatic relations. `at_war=true` when "
+        "`diplomaticStatus=War` or `DeclaredWar` flag is active. "
+        "Used by diplomacy_war_guard to enforce war-declaration rules."
+    ),
+)
+async def game_diplomacy(
+    game_id: str,
+    mp_server_url: str | None = Query(default=None, description="Unciv MP server URL override"),
+):
+    _validate_game_id(game_id)
+    try:
+        save = await get_save_dict(game_id, mp_server_url)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    relations = _extract_diplomacy(save)
+    return {"game_id": game_id, "count": len(relations), "relations": relations}
+
+
+# ---------------------------------------------------------------------------
+# GET /games/{game_id}/techs  — researched technologies per civ
+# ---------------------------------------------------------------------------
+
+def _extract_techs(save: dict) -> dict:
+    """Return researched techs per civ (excluding Barbarians)."""
+    result = {}
+    for civ in save.get("civilizations", []):
+        nation = civ.get("civName")
+        if not nation or nation == "Barbarians":
+            continue
+        tech = civ.get("tech") or {}
+        researched = tech.get("techsResearched") if isinstance(tech, dict) else []
+        policies = civ.get("policies") or {}
+        adopted = policies.get("adoptedPolicies") if isinstance(policies, dict) else []
+        result[nation] = {
+            "techs_researched": list(researched) if researched else [],
+            "adopted_policies": list(adopted) if adopted else [],
+        }
+    return result
+
+
+@router.get(
+    "/{game_id}/techs",
+    summary="Researched technologies and adopted policies per civilization",
+    description=(
+        "Returns `techs_researched` and `adopted_policies` for every non-Barbarian civ. "
+        "Used by tech checks (institutes, scientists) and voting eligibility logic."
+    ),
+)
+async def game_techs(
+    game_id: str,
+    mp_server_url: str | None = Query(default=None, description="Unciv MP server URL override"),
+):
+    _validate_game_id(game_id)
+    try:
+        save = await get_save_dict(game_id, mp_server_url)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return {"game_id": game_id, "civs": _extract_techs(save)}
+
+
+# ---------------------------------------------------------------------------
 # GET /games/{game_id}/preview  — parsed preview file
 # ---------------------------------------------------------------------------
 
