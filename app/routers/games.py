@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from app.config import settings
-from app.game.fetcher import get_save_dict, get_preview_dict, list_all_games, get_file_created_at
+from app.game.fetcher import get_save_dict, get_preview_dict, list_all_games, get_file_created_at, delete_game
 from app.game.static_data import CITY_STATES
 from app.launchers import get_launcher
 from app.services.map_checker import check_map
@@ -119,16 +119,85 @@ async def map_check(
 
 
 # ---------------------------------------------------------------------------
-# GET /games/{game_id}/save  — full parsed save dict
+# DELETE /games/{game_id}  — delete game file and preview
 # ---------------------------------------------------------------------------
 
-@router.get("/{game_id}/save", summary="Full parsed save file (large response)")
-async def game_save(game_id: str, mp_server_url: str | None = Query(default=None, description="Unciv MP server URL override")):
+@router.delete(
+    "/{game_id}",
+    summary="Delete game files",
+    description="Deletes the main save file and preview file for the given game_id.",
+)
+async def delete_game_files(game_id: str):
+    _validate_game_id(game_id)
+    result = delete_game(game_id)
+    if not result["deleted_main"] and not result["deleted_preview"]:
+        raise HTTPException(status_code=404, detail=f"No files found for game_id: {game_id}")
+    return result
+
+
+# ---------------------------------------------------------------------------
+# GET /games/{game_id}/capitals  — original capitals for all civs
+# ---------------------------------------------------------------------------
+
+def _extract_capitals(save: dict) -> dict:
+    """Return original capital info for all non-Barbarian civs."""
+    civ_cities: dict[str, list] = {
+        c["civName"]: c.get("cities") or []
+        for c in save.get("civilizations", [])
+        if c.get("civName") and c.get("civName") != "Barbarians"
+    }
+    all_cities: list[tuple[str, dict]] = [
+        (owner, city)
+        for owner, cities in civ_cities.items()
+        for city in cities
+    ]
+
+    result = {}
+    for nation in civ_cities:
+        capital = None
+        for _, city in all_cities:
+            if city.get("foundingCiv") == nation and city.get("isOriginalCapital"):
+                loc = city.get("location") or {}
+                capital = {
+                    "name": city.get("name"),
+                    "x": loc.get("x"),
+                    "y": loc.get("y"),
+                    "current_owner": None,
+                }
+                break
+        if capital is None:
+            continue
+        # find current owner
+        for owner, city in all_cities:
+            if city.get("name") == capital["name"]:
+                loc = city.get("location") or {}
+                if loc.get("x") == capital["x"] and loc.get("y") == capital["y"]:
+                    capital["current_owner"] = owner
+                    break
+        result[nation] = capital
+
+    return result
+
+
+@router.get(
+    "/{game_id}/capitals",
+    summary="Original capitals for all civilizations",
+    description=(
+        "Returns each civilization's original (native) capital: name, tile coordinates, "
+        "and current owner. `current_owner` differs from the nation key when the capital "
+        "has been captured. Barbarians excluded."
+    ),
+)
+async def game_capitals(
+    game_id: str,
+    mp_server_url: str | None = Query(default=None, description="Unciv MP server URL override"),
+):
     _validate_game_id(game_id)
     try:
-        return await get_save_dict(game_id, mp_server_url)
+        save = await get_save_dict(game_id, mp_server_url)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    return {"game_id": game_id, "capitals": _extract_capitals(save)}
 
 
 # ---------------------------------------------------------------------------

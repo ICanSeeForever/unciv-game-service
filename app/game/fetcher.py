@@ -162,3 +162,16 @@ async def list_all_games(exclude_civs: frozenset[str]) -> list[dict]:
 def get_file_created_at(game_id: str) -> str:
     """Return filesystem creation time for a game file as UTC+3 string."""
     return _fmt_ts(_file_created_at(_local_path(game_id)))
+
+
+def delete_game(game_id: str) -> dict[str, bool]:
+    """Delete main save file and preview file. Returns which files were deleted."""
+    main = _local_path(game_id)
+    preview = _preview_path(game_id)
+    deleted_main = main.is_file()
+    deleted_preview = preview.is_file()
+    if deleted_main:
+        main.unlink()
+    if deleted_preview:
+        preview.unlink()
+    return {"deleted_main": deleted_main, "deleted_preview": deleted_preview}
