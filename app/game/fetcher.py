@@ -39,8 +39,8 @@ def _file_birth_time(path: Path) -> float | None:
         mask = struct.unpack_from("<I", buf, 0)[0]
         if not (mask & _STATX_BTIME):
             return None
-        # stx_btime is at offset 88: tv_sec (int64) + tv_nsec (uint32)
-        tv_sec = struct.unpack_from("<q", buf, 88)[0]
+        # stx_btime is at offset 80: tv_sec (int64), tv_nsec at 88 (uint32)
+        tv_sec = struct.unpack_from("<q", buf, 80)[0]
         return float(tv_sec)
     except Exception:
         return None
