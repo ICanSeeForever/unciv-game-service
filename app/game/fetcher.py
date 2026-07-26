@@ -96,7 +96,7 @@ async def list_all_games(exclude_civs: frozenset[str]) -> list[dict]:
         return {
             "game_id": path.name,
             "current_player": game.get("currentPlayer"),
-            "turns": game.get("turns"),
+            "turns": game.get("turns") or 0,
             "human_civs": civs,
         }
 

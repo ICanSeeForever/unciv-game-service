@@ -51,7 +51,15 @@ async def list_games():
 # GET /games/{game_id}/info  — lightweight: currentPlayer + turns
 # ---------------------------------------------------------------------------
 
-@router.get("/{game_id}/info", summary="Current player and turn number")
+@router.get(
+    "/{game_id}/info",
+    summary="Game info: current player, turns, and full player list",
+    description=(
+        "Returns current player, turn number, and the list of all civilizations "
+        "with their type (`is_human=true` for Human, `false` for AI/city-states). "
+        "Barbarians are excluded."
+    ),
+)
 async def game_info(
     game_id: str,
     mp_server_url: str | None = Query(default=None, description="Unciv MP server URL override"),
@@ -61,10 +69,21 @@ async def game_info(
         save = await get_save_dict(game_id, mp_server_url)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+    players = [
+        {
+            "civ_name": c["civName"],
+            "is_human": c.get("playerType") == "Human",
+        }
+        for c in save.get("civilizations", [])
+        if c.get("civName") and c.get("civName") != "Barbarians"
+    ]
+
     return {
         "game_id": game_id,
         "current_player": save.get("currentPlayer"),
-        "turns": save.get("turns"),
+        "turns": save.get("turns") or 0,
+        "players": players,
     }
 
 
