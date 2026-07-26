@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from app.config import settings
-from app.game.fetcher import get_save_dict, get_preview_dict, list_all_games
+from app.game.fetcher import get_save_dict, get_preview_dict, list_all_games, get_file_created_at
 from app.game.static_data import CITY_STATES
 from app.launchers import get_launcher
 from app.services.map_checker import check_map
@@ -79,10 +79,13 @@ async def game_info(
         if c.get("civName") and c.get("civName") != "Barbarians"
     ]
 
+    created_at = get_file_created_at(game_id)
+
     return {
         "game_id": game_id,
         "current_player": save.get("currentPlayer"),
         "turns": save.get("turns") or 0,
+        "created_at": created_at,
         "players": players,
     }
 

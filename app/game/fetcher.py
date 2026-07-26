@@ -1,11 +1,55 @@
 """Game file access: local MultiplayerFiles + MP server fetch."""
 import asyncio
+import ctypes
+import ctypes.util
+import os
+import struct
 from pathlib import Path
 
 import httpx
 
 from app.config import settings
 from app.game.parser import decode_save
+
+# ---------------------------------------------------------------------------
+# File birth time via statx (Linux kernel ≥4.11, Python has no built-in)
+# ---------------------------------------------------------------------------
+
+_STATX_BTIME = 0x800
+_AT_FDCWD = -100
+_SYS_STATX = 332  # x86_64
+
+def _file_birth_time(path: Path) -> float | None:
+    """Return file creation (birth) time as Unix timestamp, or None on failure."""
+    try:
+        # statx struct: only the fields we need up to stx_btime
+        # offset of stx_btime is 88 bytes from the start
+        buf = (ctypes.c_uint8 * 256)()
+        libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+        ret = libc.statx(
+            _AT_FDCWD,
+            str(path).encode(),
+            ctypes.c_int(0),
+            ctypes.c_uint(_STATX_BTIME),
+            buf,
+        )
+        if ret != 0:
+            return None
+        # stx_mask is at offset 0 (uint32)
+        mask = struct.unpack_from("<I", buf, 0)[0]
+        if not (mask & _STATX_BTIME):
+            return None
+        # stx_btime is at offset 88: tv_sec (int64) + tv_nsec (uint32)
+        tv_sec = struct.unpack_from("<q", buf, 88)[0]
+        return float(tv_sec)
+    except Exception:
+        return None
+
+
+def _file_created_at(path: Path) -> float:
+    """Birth time if available, otherwise mtime."""
+    t = _file_birth_time(path)
+    return t if t is not None else path.stat().st_mtime
 
 
 def _local_path(game_id: str) -> Path:
@@ -63,10 +107,11 @@ def write_preview(game_id: str, raw: str) -> None:
     tmp.rename(path)
 
 
-def _parse_game_file(path: Path) -> dict | None:
-    """Parse a single save file; return None on any error."""
+def _parse_game_file(path: Path) -> tuple[dict, float] | None:
+    """Parse a single save file; return (game_dict, created_at) or None on error."""
     try:
-        return decode_save(path.read_text(encoding="utf-8").strip())
+        game = decode_save(path.read_text(encoding="utf-8").strip())
+        return game, _file_created_at(path)
     except Exception:
         return None
 
@@ -85,9 +130,10 @@ async def list_all_games(exclude_civs: frozenset[str]) -> list[dict]:
     loop = asyncio.get_event_loop()
 
     async def _load(path: Path) -> dict | None:
-        game = await loop.run_in_executor(None, _parse_game_file, path)
-        if game is None:
+        result = await loop.run_in_executor(None, _parse_game_file, path)
+        if result is None:
             return None
+        game, created_at = result
         civs = [
             c["civName"]
             for c in game.get("civilizations", [])
@@ -98,7 +144,13 @@ async def list_all_games(exclude_civs: frozenset[str]) -> list[dict]:
             "current_player": game.get("currentPlayer"),
             "turns": game.get("turns") or 0,
             "human_civs": civs,
+            "created_at": created_at,
         }
 
     results = await asyncio.gather(*[_load(p) for p in paths])
     return [r for r in results if r is not None]
+
+
+def get_file_created_at(game_id: str) -> float:
+    """Return filesystem creation time for a game file."""
+    return _file_created_at(_local_path(game_id))
