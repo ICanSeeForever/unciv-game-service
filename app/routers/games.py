@@ -14,11 +14,7 @@ from app.game.fetcher import (
 from app.game.static_data import CITY_STATES
 from app.launchers import get_launcher
 from app.services.map_checker import check_map
-from app.services.task_manager import (
-    TaskStatus,
-    create_task,
-    update_task,
-)
+from app.services.task_manager import TaskStatus, create_task, update_task
 
 router = APIRouter(prefix="/games", tags=["games"], responses={404: {"description": "Game not found"}})
 
@@ -537,52 +533,64 @@ async def start_game(body: StartGameRequest):
 
 
 async def _run_start_game(task, body: StartGameRequest) -> None:
+    import time as _time
     max_attempts = body.max_attempts or settings.max_start_attempts
     launcher = get_launcher()
+    config = dict(body.config)
     await update_task(task, status=TaskStatus.running)
+    last_issues: list[str] = []
 
     for attempt in range(1, max_attempts + 1):
+        if task.status == TaskStatus.cancelled:
+            return
         await update_task(task, attempt=attempt)
-        task.add_log(f"Попытка {attempt}/{max_attempts}: запуск игры...")
+        # Fresh seed on every attempt so the map is different each time
+        config.setdefault("mapParameters", {})["seed"] = int(_time.time() * 1000)
 
         try:
-            output = await launcher.launch(body.config)
-            task.add_log(f"Jar вывод: {output[:500]}")
+            output = await launcher.launch(config)
         except Exception as e:
-            task.add_log(f"Ошибка запуска: {e}")
-            await update_task(task, status=TaskStatus.failed, error=str(e))
-            return
+            is_last = attempt >= max_attempts
+            task.add_log(
+                f"⚠️ Попытка #{attempt}: Unciv упал при генерации карты."
+                + ("" if is_last else " 🔄 Рестарт...")
+            )
+            if is_last:
+                await update_task(task, status=TaskStatus.failed, error=str(e))
+                return
+            continue
 
-        # Extract game_id from jar output — Unciv prints the UUID to stdout
         game_id = _extract_game_id(output)
         if not game_id:
-            task.add_log("Не удалось получить game_id из вывода jar")
-            await update_task(task, status=TaskStatus.failed, error="No game_id in output")
+            await update_task(task, status=TaskStatus.failed, error="No game_id in jar output")
             return
-
-        task.add_log(f"Создана игра {game_id}, проверяем карту...")
 
         try:
             save = await get_save_dict(game_id, body.mp_server_url)
         except Exception as e:
-            task.add_log(f"Не удалось прочитать сейв: {e}")
-            await update_task(task, status=TaskStatus.failed, error=str(e))
+            await update_task(task, status=TaskStatus.failed, error=f"Cannot read save: {e}")
             return
 
         result = check_map(save)
         if result.ok:
-            task.add_log("✅ Карта прошла проверку")
             await update_task(task, status=TaskStatus.done, result={"game_id": game_id})
             return
 
-        task.add_log("❌ Карта не подходит:\n" + "\n".join(result.issues))
-        if attempt >= max_attempts:
+        last_issues = result.issues
+        is_last = attempt >= max_attempts
+        task.add_log(
+            f"⚠️ Попытка #{attempt} не прошла проверку критериев\n\n"
+            f"Несоответствия:\n" + "\n".join(last_issues)
+            + ("" if is_last else "\n🔄 Рестарт...")
+        )
+        if is_last:
             break
 
     await update_task(
         task,
         status=TaskStatus.failed,
-        error=f"Карта не прошла проверку за {max_attempts} попыток",
+        error=f"❌ Не удалось создать игру за {max_attempts} попыток\n\n"
+              f"Последние несоответствия:\n" + "\n".join(last_issues),
     )
 
 

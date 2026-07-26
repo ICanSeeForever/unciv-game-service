@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException
 
-from app.services.task_manager import get_task
+from app.services.task_manager import TaskStatus, get_task, update_task
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -20,3 +20,14 @@ async def task_status(task_id: str):
         "result": task.result,
         "error": task.error,
     }
+
+
+@router.post("/{task_id}/cancel", summary="Cancel a running task")
+async def cancel_task(task_id: str):
+    task = await get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if task.status not in (TaskStatus.pending, TaskStatus.running):
+        raise HTTPException(status_code=409, detail=f"Task already in terminal state: {task.status}")
+    await update_task(task, status=TaskStatus.cancelled)
+    return {"ok": True, "task_id": task_id}
