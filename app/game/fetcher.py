@@ -4,7 +4,15 @@ import ctypes
 import ctypes.util
 import os
 import struct
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
+
+_TZ_MOSCOW = timezone(timedelta(hours=3))
+
+
+def _fmt_ts(ts: float) -> str:
+    """Format Unix timestamp as 'YYYY-MM-DD HH:MM:SS' in UTC+3."""
+    return datetime.fromtimestamp(ts, tz=_TZ_MOSCOW).strftime("%Y-%m-%d %H:%M:%S")
 
 import httpx
 
@@ -144,13 +152,13 @@ async def list_all_games(exclude_civs: frozenset[str]) -> list[dict]:
             "current_player": game.get("currentPlayer"),
             "turns": game.get("turns") or 0,
             "human_civs": civs,
-            "created_at": created_at,
+            "created_at": _fmt_ts(created_at),
         }
 
     results = await asyncio.gather(*[_load(p) for p in paths])
     return [r for r in results if r is not None]
 
 
-def get_file_created_at(game_id: str) -> float:
-    """Return filesystem creation time for a game file."""
-    return _file_created_at(_local_path(game_id))
+def get_file_created_at(game_id: str) -> str:
+    """Return filesystem creation time for a game file as UTC+3 string."""
+    return _fmt_ts(_file_created_at(_local_path(game_id)))
