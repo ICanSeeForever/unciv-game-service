@@ -2,8 +2,11 @@
 import asyncio
 import ctypes
 import ctypes.util
+import json
 import os
 import struct
+import tarfile
+import tempfile
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -162,6 +165,87 @@ async def list_all_games(exclude_civs: frozenset[str]) -> list[dict]:
 def get_file_created_at(game_id: str) -> str:
     """Return filesystem creation time for a game file as UTC+3 string."""
     return _fmt_ts(_file_created_at(_local_path(game_id)))
+
+
+def patch_prophet(game_id: str, nation: str, value: int) -> None:
+    """Set Great Prophet counter for nation. value=99 stops spawning, original restores."""
+    path = _local_path(game_id)
+    if not path.is_file():
+        raise FileNotFoundError(f"Game file not found: {game_id}")
+    game = decode_save(path.read_text(encoding="utf-8").strip())
+    patched = False
+    for civ in game.get("civilizations", []):
+        if civ.get("civName") == nation:
+            constructions = civ.setdefault("civConstructions", {})
+            bought = constructions.setdefault("boughtItemsWithIncreasingPrice", {})
+            bought["Great Prophet"] = value
+            patched = True
+            break
+    if not patched:
+        raise ValueError(f"Nation not found in save: {nation}")
+    from app.game.parser import encode_save
+    write_save(game_id, encode_save(game))
+
+
+def load_spectate_backup(backup_file: Path, target_game_id: str) -> str:
+    """Extract backup .tar.gz, patch for spectating, write to MultiplayerFiles.
+
+    Returns the Spectator player's playerId (spec_id).
+    """
+    import base64
+    import gzip as _gzip
+    from app.game.parser import encode_save
+
+    (Path(settings.civ_path) / "MultiplayerFiles").mkdir(parents=True, exist_ok=True)
+
+    def _decode(raw: str, old_id: str) -> dict:
+        text = raw.replace(old_id, target_game_id)
+        return json.loads(_gzip.decompress(base64.b64decode(text)))
+
+    def _patch_params(d: dict) -> dict:
+        params = d.setdefault("gameParameters", {})
+        params["speed"] = "Solo-iron"
+        params["anyoneCanSpectate"] = True
+        params["baseRuleset"] = "RekMOD iron"
+        return d
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        original_game_id = None
+
+        with tarfile.open(backup_file, "r:gz") as tar:
+            for member in tar.getmembers():
+                file_name = os.path.basename(member.name)
+                if "-" not in file_name:
+                    continue
+                is_preview = "Preview" in file_name
+                if not is_preview and original_game_id is None:
+                    original_game_id = file_name
+                member.name = "tmp_Preview" if is_preview else "tmp_main"
+                tar.extract(member, path=tmp_dir)
+
+        if not original_game_id:
+            raise ValueError("No game file found inside backup archive")
+
+        main_dict = _decode((tmp_path / "tmp_main").read_text(encoding="utf-8").strip(), original_game_id)
+        _patch_params(main_dict)
+        for player in main_dict.get("civilizations", []):
+            if player.get("civName") != "Spectator" and "playerId" in player:
+                player["playerId"] = "00000000-0000-0000-0000-000000000000"
+        write_save(target_game_id, encode_save(main_dict))
+
+        spec_id = ""
+        preview_tmp = tmp_path / "tmp_Preview"
+        if preview_tmp.is_file():
+            prev_dict = _decode(preview_tmp.read_text(encoding="utf-8").strip(), original_game_id)
+            _patch_params(prev_dict)
+            for player in prev_dict.get("civilizations", []):
+                if player.get("civName") == "Spectator":
+                    spec_id = player.get("playerId", "")
+                    break
+            write_preview(target_game_id, encode_save(prev_dict))
+
+    return spec_id
 
 
 def delete_game(game_id: str) -> dict[str, bool]:

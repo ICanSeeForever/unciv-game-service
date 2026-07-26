@@ -32,8 +32,14 @@ class Settings(BaseSettings):
     expect_max_land_per_player: int = 200
     max_start_attempts: int = 30
 
+    # Backup directory (absolute path inside container)
+    backup_path: str = ""  # defaults to {civ_path}/backups when empty
+
     # Task TTL: how long to keep completed/failed tasks (seconds)
     task_ttl: int = 3600
+
+    def get_backup_path(self) -> str:
+        return self.backup_path or f"{self.civ_path}/backups"
 
     class Config:
         env_file = ".env"

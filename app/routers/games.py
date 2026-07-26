@@ -1,12 +1,16 @@
 """Game endpoints: info, map-check, start."""
 import asyncio
 import re
+import tarfile
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from app.config import settings
-from app.game.fetcher import get_save_dict, get_preview_dict, list_all_games, get_file_created_at, delete_game
+from app.game.fetcher import (
+    get_save_dict, get_preview_dict, list_all_games, get_file_created_at,
+    delete_game, patch_prophet, load_spectate_backup,
+)
 from app.game.static_data import CITY_STATES
 from app.launchers import get_launcher
 from app.services.map_checker import check_map
@@ -415,6 +419,79 @@ async def game_techs(
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     return {"game_id": game_id, "civs": _extract_techs(save)}
+
+
+# ---------------------------------------------------------------------------
+# POST /games/{game_id}/prophet  — patch Great Prophet counter for one nation
+# ---------------------------------------------------------------------------
+
+class ProphetPatchRequest(BaseModel):
+    nation: str
+    value: int
+
+
+@router.post(
+    "/{game_id}/prophet",
+    summary="Patch Great Prophet counter for a nation",
+    description=(
+        "Sets `boughtItemsWithIncreasingPrice['Great Prophet']` in the save file "
+        "for the specified nation. Use `value=99` to stop spawning, "
+        "or the original value to restore. "
+        "Reads, patches, and atomically writes the save — no full save upload needed."
+    ),
+)
+async def patch_game_prophet(game_id: str, body: ProphetPatchRequest):
+    _validate_game_id(game_id)
+    loop = asyncio.get_event_loop()
+    try:
+        await loop.run_in_executor(None, patch_prophet, game_id, body.nation, body.value)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    return {"ok": True, "game_id": game_id, "nation": body.nation, "value": body.value}
+
+
+# ---------------------------------------------------------------------------
+# POST /games/{game_id}/spectate  — load backup as spectate game
+# ---------------------------------------------------------------------------
+
+class SpectateRequest(BaseModel):
+    backup_name: str
+    subdirectory: str | None = None
+
+
+@router.post(
+    "/{game_id}/spectate",
+    summary="Load backup as a spectate game",
+    description=(
+        "Extracts a `.tar.gz` backup from the server's backup directory, "
+        "patches it for spectating (`anyoneCanSpectate=True`, `speed=Solo-iron`, "
+        "`baseRuleset=RekMOD iron`), zeroes all non-Spectator player IDs, "
+        "and writes the result to `MultiplayerFiles/{game_id}`. "
+        "`backup_name` is the filename within the backup directory. "
+        "Optional `subdirectory` appends a subfolder (e.g. measurement name). "
+        "Returns the Spectator player's `spec_id`."
+    ),
+)
+async def load_spectate_game(game_id: str, body: SpectateRequest):
+    _validate_game_id(game_id)
+    from pathlib import Path as _Path
+
+    backup_dir = settings.get_backup_path()
+    if body.subdirectory:
+        backup_dir = f"{backup_dir}/{body.subdirectory}"
+    backup_file = _Path(backup_dir) / body.backup_name
+
+    if not backup_file.is_file():
+        raise HTTPException(status_code=404, detail=f"Backup not found: {backup_file}")
+
+    loop = asyncio.get_event_loop()
+    try:
+        spec_id = await loop.run_in_executor(None, load_spectate_backup, backup_file, game_id)
+    except (ValueError, tarfile.TarError) as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    return {"ok": True, "game_id": game_id, "spec_id": spec_id}
 
 
 # ---------------------------------------------------------------------------
