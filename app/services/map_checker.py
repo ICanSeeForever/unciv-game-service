@@ -17,21 +17,51 @@ class MapCheckResult:
 def _hex_distance(pos1: dict, pos2: dict, map_width: int = 0) -> int:
     dx = pos2["x"] - pos1["x"]
     dy = pos2["y"] - pos1["y"]
+    d = max(abs(dx), abs(dy), abs(dx - dy))
     if map_width > 0:
-        # horizontal wrap: pick shorter path around the cylinder
-        dx = dx - map_width * round(dx / map_width)
-    return max(abs(dx), abs(dy), abs(dx - dy))
+        for wdx, wdy in [(dx + map_width, dy - map_width), (dx - map_width, dy + map_width)]:
+            d = min(d, max(abs(wdx), abs(wdy), abs(wdx - wdy)))
+    return d
 
 
-def _neighbors(x: int, y: int, map_width: int = 0) -> list[tuple[int, int]]:
-    raw = [
+def _neighbors(x: int, y: int) -> list[tuple[int, int]]:
+    return [
         (x + 1, y), (x - 1, y),
         (x, y + 1), (x, y - 1),
         (x + 1, y + 1), (x - 1, y - 1),
     ]
-    if map_width <= 0:
-        return raw
-    return [(nx % map_width, ny) for nx, ny in raw]
+
+
+def _tile_at(nx: int, ny: int, tiles_dict: dict, map_width: int) -> dict | None:
+    """Look up tile at (nx, ny), trying wrap-adjusted coordinates if needed."""
+    tile = tiles_dict.get((nx, ny))
+    if tile is None and map_width > 0:
+        tile = tiles_dict.get((nx + map_width, ny - map_width))
+        if tile is None:
+            tile = tiles_dict.get((nx - map_width, ny + map_width))
+    return tile
+
+
+def _neighbor_exists(nx: int, ny: int, tiles_dict: dict, map_width: int) -> bool:
+    if (nx, ny) in tiles_dict:
+        return True
+    if map_width > 0:
+        if (nx + map_width, ny - map_width) in tiles_dict:
+            return True
+        if (nx - map_width, ny + map_width) in tiles_dict:
+            return True
+    return False
+
+
+def _find_boundary_tiles(tiles_dict: dict, map_width: int) -> set[tuple[int, int]]:
+    """Return tiles that border a real (non-wrapping) map edge."""
+    boundary: set[tuple[int, int]] = set()
+    for (x, y) in tiles_dict:
+        for nx, ny in _neighbors(x, y):
+            if not _neighbor_exists(nx, ny, tiles_dict, map_width):
+                boundary.add((x, y))
+                break
+    return boundary
 
 
 def check_map(
@@ -57,6 +87,10 @@ def check_map(
     marine_civs = set(get_marine_civs())
     luxuries = get_luxuries()
 
+    tile_map_params = file_dict.get("tileMap", {}).get("mapParameters", {})
+    world_wrap = tile_map_params.get("worldWrap", False)
+    map_width = tile_map_params.get("mapSize", {}).get("width", 0) if world_wrap else 0
+
     game_nations = [
         civ["civName"] for civ in file_dict.get("civilizations", [])
         if civ["civName"] not in city_states
@@ -74,10 +108,6 @@ def check_map(
                 loc = city.get("location", {})
                 nations[name] = {"x": loc.get("x", 0), "y": loc.get("y", 0)}
                 break
-
-    tile_map_params = file_dict.get("tileMap", {}).get("mapParameters", {})
-    world_wrap = tile_map_params.get("worldWrap", False)
-    map_width = tile_map_params.get("mapSize", {}).get("width", 0) if world_wrap else 0
 
     count_ocean = 0
     count_coast = 0
@@ -110,12 +140,15 @@ def check_map(
     if not nations:
         return MapCheckResult(ok=False, issues=["Не найдены стартовые позиции наций"])
 
+    boundary_tiles = _find_boundary_tiles(tiles_dict, map_width)
+
     min_distances: list[int] = []
     marine_no_coast: list[str] = []
     bad_lux: list[str] = []
+    near_edge: list[str] = []
 
     for name, pos in nations.items():
-        # Nearest neighbour distance
+        # Nearest neighbour distance (with wrap)
         nearest = min(
             _hex_distance(pos, other_pos, map_width)
             for other_name, other_pos in nations.items()
@@ -123,16 +156,16 @@ def check_map(
         )
         min_distances.append(nearest)
 
-        # Marine civ coast check
+        # Marine civ coast check (with wrap)
         if name in marine_civs:
             has_coast = any(
-                tiles_dict.get(n_pos, {}).get("baseTerrain") == "Coast"
-                for n_pos in _neighbors(pos["x"], pos["y"], map_width)
+                (_tile_at(nx, ny, tiles_dict, map_width) or {}).get("baseTerrain") == "Coast"
+                for nx, ny in _neighbors(pos["x"], pos["y"])
             )
             if not has_coast:
                 marine_no_coast.append(name)
 
-        # Luxury radius check
+        # Luxury radius check (with wrap)
         lux_counts: dict[str, int] = defaultdict(int)
         for (tx, ty), tile in tiles_dict.items():
             resource = tile.get("resource")
@@ -144,6 +177,12 @@ def check_map(
         unique_lux = len(lux_counts)
         if total_lux < min_lux or unique_lux < min_unique_lux:
             bad_lux.append(f"{name} (всего={total_lux}, уник={unique_lux})")
+
+        # Edge proximity check: must be >2 tiles from real (non-wrapping) boundary
+        for (bx, by) in boundary_tiles:
+            if _hex_distance(pos, {"x": bx, "y": by}, map_width) <= 2:
+                near_edge.append(name)
+                break
 
     water = count_ocean + count_coast
     land = count_tiles - water
@@ -169,6 +208,8 @@ def check_map(
             f"Люксы в радиусе {luxury_radius} (нужно ≥{min_lux} всего и ≥{min_unique_lux} уник):\n  "
             + "\n  ".join(bad_lux)
         )
+    if near_edge:
+        issues.append(f"Нации у края карты (≤2 тайла): {', '.join(near_edge)}")
 
     avg_dist = sum(min_distances) / len(min_distances)
     median_dist = statistics.median(min_distances)
@@ -186,6 +227,8 @@ def check_map(
         "tiles": count_tiles,
         "land_pct": round((land / count_tiles * 100) if count_tiles else 0, 2),
         "players": player_count,
+        "world_wrap": world_wrap,
+        "map_width": map_width,
         "distances": {
             "min": min_dist,
             "max": max_dist,
