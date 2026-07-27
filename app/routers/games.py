@@ -514,6 +514,7 @@ class StartGameRequest(BaseModel):
     config: dict
     mp_server_url: str | None = None
     max_attempts: int | None = None
+    nochecks: bool = False
 
 
 @router.post(
@@ -573,6 +574,10 @@ async def _run_start_game(task, body: StartGameRequest) -> None:
             save = await get_save_dict(game_id, body.mp_server_url)
         except Exception as e:
             await update_task(task, status=TaskStatus.failed, error=f"Cannot read save: {e}")
+            return
+
+        if body.nochecks:
+            await update_task(task, status=TaskStatus.done, result={"game_id": game_id})
             return
 
         result = check_map(save)
