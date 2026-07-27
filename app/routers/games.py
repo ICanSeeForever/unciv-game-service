@@ -552,8 +552,8 @@ async def _run_start_game(task, body: StartGameRequest) -> None:
         except Exception as e:
             is_last = attempt >= max_attempts
             task.add_log(
-                f"⚠️ Попытка #{attempt}: Unciv упал при генерации карты."
-                + ("" if is_last else " 🔄 Рестарт...")
+                f"⚠️ Попытка #{attempt}: Unciv упал при генерации карты.\n{e}"
+                + ("" if is_last else "\n🔄 Рестарт...")
             )
             if is_last:
                 await update_task(task, status=TaskStatus.failed, error=str(e))
