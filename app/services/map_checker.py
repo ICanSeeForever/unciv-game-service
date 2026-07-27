@@ -14,18 +14,24 @@ class MapCheckResult:
     details: dict = field(default_factory=dict)
 
 
-def _hex_distance(pos1: dict, pos2: dict) -> int:
+def _hex_distance(pos1: dict, pos2: dict, map_width: int = 0) -> int:
     dx = pos2["x"] - pos1["x"]
     dy = pos2["y"] - pos1["y"]
+    if map_width > 0:
+        # horizontal wrap: pick shorter path around the cylinder
+        dx = dx - map_width * round(dx / map_width)
     return max(abs(dx), abs(dy), abs(dx - dy))
 
 
-def _neighbors(x: int, y: int) -> list[tuple[int, int]]:
-    return [
+def _neighbors(x: int, y: int, map_width: int = 0) -> list[tuple[int, int]]:
+    raw = [
         (x + 1, y), (x - 1, y),
         (x, y + 1), (x, y - 1),
         (x + 1, y + 1), (x - 1, y - 1),
     ]
+    if map_width <= 0:
+        return raw
+    return [(nx % map_width, ny) for nx, ny in raw]
 
 
 def check_map(
@@ -69,6 +75,10 @@ def check_map(
                 nations[name] = {"x": loc.get("x", 0), "y": loc.get("y", 0)}
                 break
 
+    tile_map_params = file_dict.get("tileMap", {}).get("mapParameters", {})
+    world_wrap = tile_map_params.get("worldWrap", False)
+    map_width = tile_map_params.get("mapSize", {}).get("width", 0) if world_wrap else 0
+
     count_ocean = 0
     count_coast = 0
     count_tiles = 0
@@ -107,7 +117,7 @@ def check_map(
     for name, pos in nations.items():
         # Nearest neighbour distance
         nearest = min(
-            _hex_distance(pos, other_pos)
+            _hex_distance(pos, other_pos, map_width)
             for other_name, other_pos in nations.items()
             if other_name != name
         )
@@ -117,7 +127,7 @@ def check_map(
         if name in marine_civs:
             has_coast = any(
                 tiles_dict.get(n_pos, {}).get("baseTerrain") == "Coast"
-                for n_pos in _neighbors(pos["x"], pos["y"])
+                for n_pos in _neighbors(pos["x"], pos["y"], map_width)
             )
             if not has_coast:
                 marine_no_coast.append(name)
@@ -127,7 +137,7 @@ def check_map(
         for (tx, ty), tile in tiles_dict.items():
             resource = tile.get("resource")
             if resource and resource in luxuries:
-                if _hex_distance(pos, {"x": tx, "y": ty}) <= luxury_radius:
+                if _hex_distance(pos, {"x": tx, "y": ty}, map_width) <= luxury_radius:
                     lux_counts[resource] += 1
 
         total_lux = sum(lux_counts.values())
