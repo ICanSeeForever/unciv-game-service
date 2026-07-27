@@ -39,7 +39,12 @@ class SSHGameLauncher(GameLauncher):
             if settings.ssh_sudo_password:
                 jar_cmd = f"echo {settings.ssh_sudo_password!r} | sudo -S sh -c {jar_cmd!r}"
 
-            result = await conn.run(jar_cmd, check=True)
+            try:
+                result = await conn.run(jar_cmd, check=True)
+            except asyncssh.ProcessError as exc:
+                output = ((exc.stderr or "") + (exc.stdout or "")).strip()
+                details = output or f"exit status {exc.exit_status}"
+                raise RuntimeError(details) from exc
             await conn.run(f"rm -f {remote_cfg}")
 
             # Jar may print game id to stdout or stderr — return both
