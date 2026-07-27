@@ -1,7 +1,10 @@
 """Game endpoints: info, map-check, start."""
 import asyncio
+import logging
 import re
 import tarfile
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
@@ -551,8 +554,9 @@ async def _run_start_game(task, body: StartGameRequest) -> None:
             output = await launcher.launch(config)
         except Exception as e:
             is_last = attempt >= max_attempts
+            logger.error("Attempt %d: Unciv jar crashed: %s", attempt, e)
             task.add_log(
-                f"⚠️ Попытка #{attempt}: Unciv упал при генерации карты.\n{e}"
+                f"⚠️ Попытка #{attempt}: Unciv упал при генерации карты."
                 + ("" if is_last else "\n🔄 Рестарт...")
             )
             if is_last:
