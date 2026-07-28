@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     game_host: str = ""
 
     # Launcher: "local" or "ssh"
-    launcher_type: str = "ssh"
+    launcher_type: str = "local"
 
     # Path to Unciv.jar (used by LocalGameLauncher)
     unciv_jar_path: str = "/opt/unciv/Unciv.jar"

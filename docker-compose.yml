@@ -8,12 +8,11 @@ services:
     env_file:
       - .env
     environment:
-      # CIV_PATH in .env is the host path used for volume mount above;
-      # inside the container the data is always at /data/unciv
       CIV_PATH: /data/unciv
     volumes:
-      # Mount the Unciv MultiplayerFiles directory
       - ${CIV_PATH}:/data/unciv
+      # Place Unciv.jar next to docker-compose.yml for local launcher
+      - ./Unciv.jar:/opt/unciv/Unciv.jar:ro
     networks:
       - civ_network
 

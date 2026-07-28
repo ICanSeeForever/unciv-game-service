@@ -6,13 +6,13 @@
         "minNumberOfPlayers": 0,
         "maxNumberOfPlayers": 0,
         "players": [
-            { "chosenCiv": "Spectator", "playerType": "Human", "playerId": "SPECTATOR-UUID-HERE" },
-            { "chosenCiv": "RandomMajorCiv", "playerType": "Human", "playerId": "PLAYER-1-UUID" },
-            { "chosenCiv": "RandomMajorCiv", "playerType": "Human", "playerId": "PLAYER-2-UUID" },
-            { "chosenCiv": "RandomMajorCiv", "playerType": "Human", "playerId": "PLAYER-3-UUID" },
-            { "chosenCiv": "RandomMajorCiv", "playerType": "Human", "playerId": "PLAYER-4-UUID" },
-            { "chosenCiv": "RandomMajorCiv", "playerType": "Human", "playerId": "PLAYER-5-UUID" },
-            { "chosenCiv": "RandomMajorCiv", "playerType": "Human", "playerId": "PLAYER-6-UUID" }
+            { "chosenCiv": "Spectator",    "playerType": "Human", "playerId": "SPECTATOR-UUID-HERE" },
+            { "chosenCiv": "Bulgaria",     "playerType": "Human", "playerId": "PLAYER-1-UUID" },
+            { "chosenCiv": "Ayyubids",     "playerType": "Human", "playerId": "PLAYER-2-UUID" },
+            { "chosenCiv": "Persia",       "playerType": "Human", "playerId": "PLAYER-3-UUID" },
+            { "chosenCiv": "Colombia",     "playerType": "Human", "playerId": "PLAYER-4-UUID" },
+            { "chosenCiv": "Philippines",  "playerType": "Human", "playerId": "PLAYER-5-UUID" },
+            { "chosenCiv": "Burma",        "playerType": "Human", "playerId": "PLAYER-6-UUID" }
         ],
         "randomNumberOfCityStates": false,
         "minNumberOfCityStates": 0,
