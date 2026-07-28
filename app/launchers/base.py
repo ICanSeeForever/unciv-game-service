@@ -2,7 +2,6 @@
 import abc
 import json
 import tempfile
-from pathlib import Path
 
 
 class GameLauncher(abc.ABC):
@@ -11,6 +10,14 @@ class GameLauncher(abc.ABC):
         """Launch Unciv game creation with given config.
 
         Returns stdout output from the jar invocation.
+        """
+
+    async def update(self, jar_url: str, mod_git_url: str | None = None) -> None:
+        """Download/update Unciv.jar (and optionally mods) before game creation.
+
+        Local launcher: downloads zip, extracts jar.
+        SSH launcher: SSHes in, wgets zip, unzips, clones mod.
+        Override in subclasses; default is a no-op.
         """
 
     def _write_config_tmp(self, config: dict) -> str:

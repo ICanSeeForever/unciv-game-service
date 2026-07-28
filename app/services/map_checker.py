@@ -178,9 +178,9 @@ def check_map(
         if total_lux < min_lux or unique_lux < min_unique_lux:
             bad_lux.append(f"{name} (всего={total_lux}, уник={unique_lux})")
 
-        # Edge proximity check: must be >2 tiles from real (non-wrapping) boundary
+        # Edge proximity check: must be >1 tile from real (non-wrapping) boundary
         for (bx, by) in boundary_tiles:
-            if _hex_distance(pos, {"x": bx, "y": by}, map_width) <= 2:
+            if _hex_distance(pos, {"x": bx, "y": by}, map_width) <= 1:
                 near_edge.append(name)
                 break
 
@@ -209,7 +209,7 @@ def check_map(
             + "\n  ".join(bad_lux)
         )
     if near_edge:
-        issues.append(f"Нации у края карты (≤2 тайла): {', '.join(near_edge)}")
+        issues.append(f"Нации у края карты (≤1 тайла от границы): {', '.join(near_edge)}")
 
     avg_dist = sum(min_distances) / len(min_distances)
     median_dist = statistics.median(min_distances)

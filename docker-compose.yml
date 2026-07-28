@@ -12,7 +12,7 @@ services:
     volumes:
       - ${CIV_PATH}:/data/unciv
       # Place Unciv.jar next to docker-compose.yml for local launcher
-      - ./Unciv.jar:/opt/unciv/Unciv.jar:ro
+      - ./Unciv.jar:/opt/unciv/Unciv.jar
     networks:
       - civ_network
 

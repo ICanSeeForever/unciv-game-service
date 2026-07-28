@@ -507,6 +507,9 @@ class StartGameRequest(BaseModel):
     config: dict
     max_attempts: int | None = None
     nochecks: bool = False
+    noupdate: bool = False
+    jar_url: str | None = None
+    mod_git_url: str | None = None
 
 
 @router.post(
@@ -540,6 +543,16 @@ async def _run_start_game(task, body: StartGameRequest) -> None:
             return
 
         await update_task(task, status=TaskStatus.running)
+
+        if not body.noupdate and body.jar_url:
+            task.add_log("⬇️ Обновление Unciv.jar...")
+            try:
+                await launcher.update(body.jar_url, body.mod_git_url)
+                task.add_log("✅ Unciv.jar обновлён.")
+            except Exception as e:
+                await update_task(task, status=TaskStatus.failed, error=f"Ошибка обновления jar: {e}")
+                return
+
         last_issues: list[str] = []
 
         for attempt in range(1, max_attempts + 1):
