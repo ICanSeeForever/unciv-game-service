@@ -1,15 +1,11 @@
 from fastapi import APIRouter, HTTPException
 
-from app.services.task_manager import TaskStatus, get_task, update_task
+from app.services.task_manager import TaskStatus, get_task, list_tasks, update_task
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
 
-@router.get("/{task_id}", summary="Poll async task status and log")
-async def task_status(task_id: str):
-    task = await get_task(task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
+def _task_dict(task) -> dict:
     return {
         "id": task.id,
         "status": task.status,
@@ -20,6 +16,22 @@ async def task_status(task_id: str):
         "result": task.result,
         "error": task.error,
     }
+
+
+@router.get("", summary="List all tasks")
+async def tasks_list(status: str | None = None):
+    tasks = await list_tasks()
+    if status:
+        tasks = [t for t in tasks if t.status == status]
+    return {"count": len(tasks), "tasks": [_task_dict(t) for t in tasks]}
+
+
+@router.get("/{task_id}", summary="Poll async task status and log")
+async def task_status(task_id: str):
+    task = await get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return _task_dict(task)
 
 
 @router.post("/{task_id}/cancel", summary="Cancel a running task")

@@ -1,4 +1,4 @@
-"""Game file access: local MultiplayerFiles + MP server fetch."""
+"""Game file access: local MultiplayerFiles."""
 import asyncio
 import ctypes
 import ctypes.util
@@ -16,8 +16,6 @@ _TZ_MOSCOW = timezone(timedelta(hours=3))
 def _fmt_ts(ts: float) -> str:
     """Format Unix timestamp as 'YYYY-MM-DD HH:MM:SS' in UTC+3."""
     return datetime.fromtimestamp(ts, tz=_TZ_MOSCOW).strftime("%Y-%m-%d %H:%M:%S")
-
-import httpx
 
 from app.config import settings
 from app.game.parser import decode_save
@@ -71,26 +69,11 @@ def _preview_path(game_id: str) -> Path:
     return Path(settings.civ_path) / "MultiplayerFiles" / f"{game_id}_Preview"
 
 
-async def _fetch_from_server(game_id: str, mp_server_url: str) -> str:
-    url = f"{mp_server_url.rstrip('/')}/files/{game_id}"
-    async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.get(url)
-        r.raise_for_status()
-        return r.text
-
-
-async def get_save_dict(game_id: str, mp_server_url: str | None = None) -> dict:
-    """Return parsed save dict from local file, or MP server if absent."""
+async def get_save_dict(game_id: str) -> dict:
     path = _local_path(game_id)
-    if path.is_file():
-        raw = path.read_text(encoding="utf-8")
-    elif mp_server_url:
-        raw = await _fetch_from_server(game_id, mp_server_url)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(raw, encoding="utf-8")
-    else:
-        raise FileNotFoundError(f"Game file not found locally and no mp_server_url given: {game_id}")
-    return decode_save(raw.strip())
+    if not path.is_file():
+        raise FileNotFoundError(f"Game file not found: {game_id}")
+    return decode_save(path.read_text(encoding="utf-8").strip())
 
 
 async def get_preview_dict(game_id: str) -> dict:

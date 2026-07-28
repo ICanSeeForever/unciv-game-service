@@ -35,6 +35,12 @@ class Task:
 
 _tasks: dict[str, Task] = {}
 _lock = asyncio.Lock()
+_start_lock = asyncio.Lock()
+
+
+def get_start_lock() -> asyncio.Lock:
+    """Mutex: only one game-creation task runs at a time; others stay pending."""
+    return _start_lock
 
 
 async def create_task() -> Task:
@@ -46,6 +52,10 @@ async def create_task() -> Task:
 
 async def get_task(task_id: str) -> Task | None:
     return _tasks.get(task_id)
+
+
+async def list_tasks() -> list[Task]:
+    return sorted(_tasks.values(), key=lambda t: t.created_at)
 
 
 async def update_task(task: Task, **kwargs) -> None:

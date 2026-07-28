@@ -17,7 +17,7 @@ from app.game.fetcher import (
 from app.game.static_data import CITY_STATES
 from app.launchers import get_launcher
 from app.services.map_checker import check_map
-from app.services.task_manager import TaskStatus, create_task, update_task
+from app.services.task_manager import TaskStatus, create_task, get_start_lock, update_task
 
 router = APIRouter(prefix="/games", tags=["games"], responses={404: {"description": "Game not found"}})
 
@@ -65,11 +65,10 @@ async def list_games():
 )
 async def game_info(
     game_id: str,
-    mp_server_url: str | None = Query(default=None, description="Unciv MP server URL override"),
 ):
     _validate_game_id(game_id)
     try:
-        save = await get_save_dict(game_id, mp_server_url)
+        save = await get_save_dict(game_id)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -100,7 +99,6 @@ async def game_info(
 @router.get("/{game_id}/map-check", summary="Check map quality (distances, luxuries, marine civs, land ratio)")
 async def map_check(
     game_id: str,
-    mp_server_url: str | None = Query(default=None, description="Unciv MP server URL override"),
     min_distance: int | None = Query(default=None, description="Override minimum distance between start positions"),
     max_distance: int | None = Query(default=None, description="Override maximum distance between start positions"),
     min_luxuries: int | None = Query(default=None, description="Override minimum total luxuries in radius"),
@@ -108,7 +106,7 @@ async def map_check(
 ):
     _validate_game_id(game_id)
     try:
-        save = await get_save_dict(game_id, mp_server_url)
+        save = await get_save_dict(game_id)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     result = check_map(
@@ -193,11 +191,10 @@ def _extract_capitals(save: dict) -> dict:
 )
 async def game_capitals(
     game_id: str,
-    mp_server_url: str | None = Query(default=None, description="Unciv MP server URL override"),
 ):
     _validate_game_id(game_id)
     try:
-        save = await get_save_dict(game_id, mp_server_url)
+        save = await get_save_dict(game_id)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     return {"game_id": game_id, "capitals": _extract_capitals(save)}
@@ -250,11 +247,10 @@ def _extract_units(save: dict) -> list:
 async def game_units(
     game_id: str,
     owner: str | None = Query(default=None, description="Filter by civ name"),
-    mp_server_url: str | None = Query(default=None, description="Unciv MP server URL override"),
 ):
     _validate_game_id(game_id)
     try:
-        save = await get_save_dict(game_id, mp_server_url)
+        save = await get_save_dict(game_id)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     units = _extract_units(save)
@@ -306,11 +302,10 @@ def _extract_cities(save: dict, nation: str | None = None) -> list:
 async def game_cities(
     game_id: str,
     nation: str | None = Query(default=None, description="Filter by civ name"),
-    mp_server_url: str | None = Query(default=None, description="Unciv MP server URL override"),
 ):
     _validate_game_id(game_id)
     try:
-        save = await get_save_dict(game_id, mp_server_url)
+        save = await get_save_dict(game_id)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     cities = _extract_cities(save, nation)
@@ -367,11 +362,10 @@ def _extract_diplomacy(save: dict) -> list:
 )
 async def game_diplomacy(
     game_id: str,
-    mp_server_url: str | None = Query(default=None, description="Unciv MP server URL override"),
 ):
     _validate_game_id(game_id)
     try:
-        save = await get_save_dict(game_id, mp_server_url)
+        save = await get_save_dict(game_id)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     relations = _extract_diplomacy(save)
@@ -410,11 +404,10 @@ def _extract_techs(save: dict) -> dict:
 )
 async def game_techs(
     game_id: str,
-    mp_server_url: str | None = Query(default=None, description="Unciv MP server URL override"),
 ):
     _validate_game_id(game_id)
     try:
-        save = await get_save_dict(game_id, mp_server_url)
+        save = await get_save_dict(game_id)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     return {"game_id": game_id, "civs": _extract_techs(save)}
@@ -512,7 +505,6 @@ async def game_preview(game_id: str):
 
 class StartGameRequest(BaseModel):
     config: dict
-    mp_server_url: str | None = None
     max_attempts: int | None = None
     nochecks: bool = False
 
@@ -541,66 +533,72 @@ async def _run_start_game(task, body: StartGameRequest) -> None:
     max_attempts = body.max_attempts or settings.max_start_attempts
     launcher = get_launcher()
     config = dict(body.config)
-    await update_task(task, status=TaskStatus.running)
-    last_issues: list[str] = []
 
-    for attempt in range(1, max_attempts + 1):
+    # Wait for exclusive slot — task stays pending until no other game is starting
+    async with get_start_lock():
         if task.status == TaskStatus.cancelled:
             return
-        await update_task(task, attempt=attempt)
-        # Fresh seed on every attempt so the map is different each time
-        config.setdefault("mapParameters", {})["seed"] = int(_time.time() * 1000)
 
-        try:
-            output = await launcher.launch(config)
-        except Exception as e:
+        await update_task(task, status=TaskStatus.running)
+        last_issues: list[str] = []
+
+        for attempt in range(1, max_attempts + 1):
+            if task.status == TaskStatus.cancelled:
+                return
+            await update_task(task, attempt=attempt)
+            # Fresh seed on every attempt so the map is different each time
+            config.setdefault("mapParameters", {})["seed"] = int(_time.time() * 1000)
+
+            try:
+                output = await launcher.launch(config)
+            except Exception as e:
+                is_last = attempt >= max_attempts
+                logger.error("Attempt %d: Unciv jar crashed: %s", attempt, e)
+                task.add_log(
+                    f"⚠️ Попытка #{attempt}: Unciv упал при генерации карты."
+                    + ("" if is_last else "\n🔄 Рестарт...")
+                )
+                if is_last:
+                    await update_task(task, status=TaskStatus.failed, error=str(e))
+                    return
+                continue
+
+            game_id = _extract_game_id(output)
+            if not game_id:
+                await update_task(task, status=TaskStatus.failed, error="No game_id in jar output")
+                return
+
+            try:
+                save = await get_save_dict(game_id)
+            except Exception as e:
+                await update_task(task, status=TaskStatus.failed, error=f"Cannot read save: {e}")
+                return
+
+            if body.nochecks:
+                await update_task(task, status=TaskStatus.done, result={"game_id": game_id})
+                return
+
+            result = check_map(save)
+            if result.ok:
+                await update_task(task, status=TaskStatus.done, result={"game_id": game_id})
+                return
+
+            last_issues = result.issues
             is_last = attempt >= max_attempts
-            logger.error("Attempt %d: Unciv jar crashed: %s", attempt, e)
             task.add_log(
-                f"⚠️ Попытка #{attempt}: Unciv упал при генерации карты."
+                f"⚠️ Попытка #{attempt} не прошла проверку критериев\n\n"
+                f"Несоответствия:\n" + "\n".join(last_issues)
                 + ("" if is_last else "\n🔄 Рестарт...")
             )
             if is_last:
-                await update_task(task, status=TaskStatus.failed, error=str(e))
-                return
-            continue
+                break
 
-        game_id = _extract_game_id(output)
-        if not game_id:
-            await update_task(task, status=TaskStatus.failed, error="No game_id in jar output")
-            return
-
-        try:
-            save = await get_save_dict(game_id, body.mp_server_url)
-        except Exception as e:
-            await update_task(task, status=TaskStatus.failed, error=f"Cannot read save: {e}")
-            return
-
-        if body.nochecks:
-            await update_task(task, status=TaskStatus.done, result={"game_id": game_id})
-            return
-
-        result = check_map(save)
-        if result.ok:
-            await update_task(task, status=TaskStatus.done, result={"game_id": game_id})
-            return
-
-        last_issues = result.issues
-        is_last = attempt >= max_attempts
-        task.add_log(
-            f"⚠️ Попытка #{attempt} не прошла проверку критериев\n\n"
-            f"Несоответствия:\n" + "\n".join(last_issues)
-            + ("" if is_last else "\n🔄 Рестарт...")
+        await update_task(
+            task,
+            status=TaskStatus.failed,
+            error=f"❌ Не удалось создать игру за {max_attempts} попыток\n\n"
+                  f"Последние несоответствия:\n" + "\n".join(last_issues),
         )
-        if is_last:
-            break
-
-    await update_task(
-        task,
-        status=TaskStatus.failed,
-        error=f"❌ Не удалось создать игру за {max_attempts} попыток\n\n"
-              f"Последние несоответствия:\n" + "\n".join(last_issues),
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -729,11 +727,10 @@ def _extract_snapshot(save: dict) -> dict:
 )
 async def game_snapshot(
     game_id: str,
-    mp_server_url: str | None = Query(default=None),
 ):
     _validate_game_id(game_id)
     try:
-        save = await get_save_dict(game_id, mp_server_url)
+        save = await get_save_dict(game_id)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     data = _extract_snapshot(save)
@@ -831,11 +828,10 @@ def _compute_veto(save: dict) -> dict:
 )
 async def game_veto(
     game_id: str,
-    mp_server_url: str | None = Query(default=None),
 ):
     _validate_game_id(game_id)
     try:
-        save = await get_save_dict(game_id, mp_server_url)
+        save = await get_save_dict(game_id)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     result = _compute_veto(save)
