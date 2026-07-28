@@ -44,7 +44,7 @@ class LocalGameLauncher(GameLauncher):
         repo_name = repo_url.rstrip(".git").rstrip("/").rsplit("/", 1)[-1]
         mod_name = repo_name.replace("-", " ")
 
-        mods_dir = Path(settings.unciv_data_dir) / "mods"
+        mods_dir = Path(settings.unciv_jar_path).parent / "mods"
         mod_dir = mods_dir / mod_name
 
         if mod_dir.exists():
@@ -64,10 +64,12 @@ class LocalGameLauncher(GameLauncher):
 
     async def launch(self, config: dict) -> str:
         cfg_path = self._write_config_tmp(config)
+        jar_dir = str(Path(settings.unciv_jar_path).parent)
         try:
             proc = await asyncio.create_subprocess_exec(
                 "java", "-jar", settings.unciv_jar_path,
                 f"--creategame={cfg_path}",
+                cwd=jar_dir,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
             )
