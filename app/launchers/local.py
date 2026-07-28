@@ -2,6 +2,7 @@
 import asyncio
 import io
 import os
+import shutil
 import zipfile
 from pathlib import Path
 
@@ -31,17 +32,15 @@ class LocalGameLauncher(GameLauncher):
             await self._clone_mod(mod_git_url)
 
     async def _clone_mod(self, mod_git_url: str) -> None:
-        """Clone or update the mod into the Unciv mods directory.
+        """Fresh-clone the mod into the Unciv mods directory, wiping any existing copy.
 
         mod_git_url format: https://github.com/Owner/Repo-name/tree/branch
         Mod directory name is derived from the repo name (hyphens → spaces).
         """
-        # Parse URL: strip /tree/<branch> to get repo URL and branch
         parts = mod_git_url.split("/tree/")
         repo_url = parts[0].rstrip("/") + ".git"
         branch = parts[1] if len(parts) > 1 else "main"
 
-        # Derive mod name from repo name (last path segment, hyphens → spaces)
         repo_name = repo_url.rstrip(".git").rstrip("/").rsplit("/", 1)[-1]
         mod_name = repo_name.replace("-", " ")
 
@@ -49,26 +48,19 @@ class LocalGameLauncher(GameLauncher):
         mod_dir = mods_dir / mod_name
 
         if mod_dir.exists():
-            # Pull latest
-            proc = await asyncio.create_subprocess_exec(
-                "git", "-C", str(mod_dir), "pull", "--ff-only",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
-            stdout, _ = await proc.communicate()
-            print(f"Mod pull ({mod_name}): {stdout.decode('utf-8', errors='replace').strip()}")
-        else:
-            mods_dir.mkdir(parents=True, exist_ok=True)
-            proc = await asyncio.create_subprocess_exec(
-                "git", "clone", "--branch", branch, "--depth", "1",
-                repo_url, str(mod_dir),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
-            stdout, _ = await proc.communicate()
-            print(f"Mod clone ({mod_name}): {stdout.decode('utf-8', errors='replace').strip()}")
-            if proc.returncode != 0:
-                raise RuntimeError(f"git clone failed:\n{stdout.decode('utf-8', errors='replace')}")
+            shutil.rmtree(mod_dir)
+
+        mods_dir.mkdir(parents=True, exist_ok=True)
+        proc = await asyncio.create_subprocess_exec(
+            "git", "clone", "--branch", branch, "--depth", "1",
+            repo_url, str(mod_dir),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        stdout, _ = await proc.communicate()
+        print(f"Mod clone ({mod_name}): {stdout.decode('utf-8', errors='replace').strip()}")
+        if proc.returncode != 0:
+            raise RuntimeError(f"git clone failed:\n{stdout.decode('utf-8', errors='replace')}")
 
     async def launch(self, config: dict) -> str:
         cfg_path = self._write_config_tmp(config)
