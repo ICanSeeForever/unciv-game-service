@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     # Task TTL: how long to keep completed/failed tasks (seconds)
     task_ttl: int = 3600
 
+    # API key for all endpoints (leave empty to disable auth — dev/local only)
+    api_key: str = ""
+
     def get_backup_path(self) -> str:
         return self.backup_path or f"{self.civ_path}/backups"
 

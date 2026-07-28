@@ -1,7 +1,8 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 
+from app.auth import verify_api_key
 from app.routers.games import router as games_router
 from app.routers.tasks import router as tasks_router
 from app.services.task_manager import start_cleanup_task
@@ -54,8 +55,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-app.include_router(games_router)
-app.include_router(tasks_router)
+_auth = [Depends(verify_api_key)]
+
+app.include_router(games_router, dependencies=_auth)
+app.include_router(tasks_router, dependencies=_auth)
 
 
 @app.get("/health", tags=["health"], summary="Health check")
