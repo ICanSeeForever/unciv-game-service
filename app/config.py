@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     # Path to Unciv.jar (used by LocalGameLauncher)
     unciv_jar_path: str = "/opt/unciv/Unciv.jar"
 
+    # Unciv data directory where mods are stored (used by LocalGameLauncher)
+    unciv_data_dir: str = "/root/.local/share/Unciv"
+
     # SSH settings (used by SSHGameLauncher)
     ssh_host: str = ""
     ssh_user: str = ""
