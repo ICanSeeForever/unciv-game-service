@@ -182,8 +182,8 @@ def load_spectate_backup(backup_file: Path, target_game_id: str) -> str:
     (Path(settings.civ_path) / "MultiplayerFiles").mkdir(parents=True, exist_ok=True)
 
     def _decode(raw: str, old_id: str) -> dict:
-        text = raw.replace(old_id, target_game_id)
-        return json.loads(_gzip.decompress(base64.b64decode(text)))
+        decompressed = _gzip.decompress(base64.b64decode(raw)).decode('utf-8')
+        return json.loads(decompressed.replace(old_id, target_game_id))
 
     def _patch_params(d: dict) -> dict:
         params = d.setdefault("gameParameters", {})
