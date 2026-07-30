@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from app.config import settings
 from app.game.fetcher import (
     get_save_dict, get_preview_dict, list_all_games, get_file_created_at,
-    delete_game, patch_prophet, load_spectate_backup,
+    delete_game, patch_prophet, load_spectate_backup, write_save,
 )
 from app.game.static_data import CITY_STATES
 from app.launchers import get_launcher
@@ -56,9 +56,10 @@ async def list_games():
 
 @router.get(
     "/{game_id}/info",
-    summary="Game info: current player, turns, and full player list",
+    summary="Game info: current player, turns, speed, version, victory data, and full player list",
     description=(
-        "Returns current player, turn number, and the list of all civilizations "
+        "Returns current player, turn number, game speed, version, victory data, "
+        "and the list of all civilizations "
         "with their type (`is_human=true` for Human, `false` for AI/city-states). "
         "Barbarians are excluded."
     ),
@@ -83,12 +84,26 @@ async def game_info(
 
     created_at = get_file_created_at(game_id)
 
+    game_params = save.get("gameParameters") or {}
+    version_raw = save.get("version") or {}
+    created_with = version_raw.get("createdWith") or {}
+    victory_data = save.get("victoryData") or {}
+
     return {
         "game_id": game_id,
         "current_player": save.get("currentPlayer"),
         "turns": save.get("turns") or 0,
         "created_at": created_at,
         "players": players,
+        "speed": game_params.get("speed"),
+        "version": {
+            "text": created_with.get("text"),
+            "number": created_with.get("number"),
+        },
+        "victory_data": {
+            "winning_civ": victory_data.get("winningCiv"),
+            "victory_type": victory_data.get("victoryType"),
+        } if victory_data else None,
     }
 
 
@@ -377,7 +392,7 @@ async def game_diplomacy(
 # ---------------------------------------------------------------------------
 
 def _extract_techs(save: dict) -> dict:
-    """Return researched techs per civ (excluding Barbarians)."""
+    """Return researched techs and policy state per civ (excluding Barbarians)."""
     result = {}
     for civ in save.get("civilizations", []):
         nation = civ.get("civName")
@@ -387,9 +402,13 @@ def _extract_techs(save: dict) -> dict:
         researched = tech.get("techsResearched") if isinstance(tech, dict) else []
         policies = civ.get("policies") or {}
         adopted = policies.get("adoptedPolicies") if isinstance(policies, dict) else []
+        stored_culture = policies.get("storedCulture") if isinstance(policies, dict) else None
+        should_open = policies.get("shouldOpenPolicyPicker") if isinstance(policies, dict) else None
         result[nation] = {
             "techs_researched": list(researched) if researched else [],
             "adopted_policies": list(adopted) if adopted else [],
+            "stored_culture": int(stored_culture) if stored_culture is not None else 0,
+            "should_open_policy_picker": bool(should_open) if should_open is not None else False,
         }
     return result
 
@@ -442,6 +461,90 @@ async def patch_game_prophet(game_id: str, body: ProphetPatchRequest):
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     return {"ok": True, "game_id": game_id, "nation": body.nation, "value": body.value}
+
+
+# ---------------------------------------------------------------------------
+# POST /games/{game_id}/cs-tech  — distribute common techs to CS human nations
+# ---------------------------------------------------------------------------
+
+class CsTechRequest(BaseModel):
+    cs_nations: list[str]
+
+
+def _apply_cs_tech(save: dict, cs_nations: list[str]) -> dict[str, list[str]]:
+    """Compute common techs among non-CS humans and add them to CS nations."""
+    from functools import reduce
+
+    cs_set = set(cs_nations)
+
+    human_tech_lists = []
+    for civ in save.get("civilizations", []):
+        name = civ.get("civName")
+        if not name or name == "Spectator":
+            continue
+        if civ.get("playerType") != "Human":
+            continue
+        if name in cs_set:
+            continue
+        tech = civ.get("tech") or {}
+        researched = tech.get("techsResearched") if isinstance(tech, dict) else []
+        human_tech_lists.append(list(researched) if researched else [])
+
+    if not human_tech_lists:
+        return {}
+
+    sorted_lists = sorted(human_tech_lists, key=len, reverse=True)
+    top_two = sorted_lists[:2]
+    len_second = len(top_two[-1])
+    reference = top_two + [k for k in sorted_lists if len(k) == len_second and k not in top_two]
+    common_techs = list(reduce(set.intersection, (set(k) for k in reference)))
+
+    added: dict[str, list[str]] = {}
+    for civ in save.get("civilizations", []):
+        name = civ.get("civName")
+        if name not in cs_set:
+            continue
+        tech = civ.get("tech") or {}
+        if not isinstance(tech, dict):
+            continue
+        researched: list = tech.get("techsResearched") or []
+        new_techs = [t for t in common_techs if t not in researched]
+        if new_techs:
+            researched.extend(new_techs)
+            tech["techsResearched"] = researched
+            to_research = tech.get("techsToResearch")
+            if to_research:
+                tech["techsToResearch"] = [t for t in to_research if t not in researched]
+            added[name] = new_techs
+
+    return added
+
+
+@router.post(
+    "/{game_id}/cs-tech",
+    summary="Distribute common techs to CS human nations",
+    description=(
+        "Computes the intersection of researched techs among non-CS human civilizations "
+        "and adds any missing ones to the specified CS nations. "
+        "Reads, patches, and atomically writes the save."
+    ),
+)
+async def patch_cs_tech(game_id: str, body: CsTechRequest):
+    _validate_game_id(game_id)
+    try:
+        save = await get_save_dict(game_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    from app.game.parser import encode_save
+
+    loop = asyncio.get_event_loop()
+    added = await loop.run_in_executor(None, _apply_cs_tech, save, body.cs_nations)
+    if added:
+        raw = await loop.run_in_executor(None, encode_save, save)
+        await loop.run_in_executor(None, write_save, game_id, raw)
+
+    return {"ok": True, "game_id": game_id, "added": added}
 
 
 # ---------------------------------------------------------------------------
