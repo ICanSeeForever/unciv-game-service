@@ -77,6 +77,7 @@ async def game_info(
         {
             "civ_name": c["civName"],
             "is_human": c.get("playerType") == "Human",
+            "player_id": c.get("playerId"),
         }
         for c in save.get("civilizations", [])
         if c.get("civName") and c.get("civName") != "Barbarians"
@@ -952,6 +953,29 @@ async def game_veto(
         raise HTTPException(status_code=404, detail=str(e))
     result = _compute_veto(save)
     return {"game_id": game_id, **result}
+
+
+# ---------------------------------------------------------------------------
+# GET /games/{game_id}/prophet  — prophet purchase counts per nation
+# ---------------------------------------------------------------------------
+
+@router.get("/{game_id}/prophet", summary="Great Prophet purchase counts per nation")
+async def get_prophet(game_id: str):
+    _validate_game_id(game_id)
+    try:
+        save = await get_save_dict(game_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    counts = {}
+    for civ in save.get("civilizations", []):
+        civ_name = civ.get("civName")
+        if not civ_name:
+            continue
+        constructions = civ.get("civConstructions") or {}
+        bought = constructions.get("boughtItemsWithIncreasingPrice") or {}
+        if "Great Prophet" in bought:
+            counts[civ_name] = bought["Great Prophet"]
+    return {"prophet_counts": counts}
 
 
 def _extract_game_id(output: str) -> str | None:
