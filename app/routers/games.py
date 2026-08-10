@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from app.config import settings
 from app.game.fetcher import (
     get_save_dict, get_preview_dict, list_all_games, get_file_created_at,
-    delete_game, patch_prophet, load_spectate_backup, write_save,
+    delete_game, patch_prophet, load_spectate_backup, write_save, create_backup,
 )
 from app.game.static_data import CITY_STATES
 from app.launchers import get_launcher
@@ -462,6 +462,42 @@ async def patch_game_prophet(game_id: str, body: ProphetPatchRequest):
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     return {"ok": True, "game_id": game_id, "nation": body.nation, "value": body.value}
+
+
+# ---------------------------------------------------------------------------
+# POST /games/{game_id}/backup  — create a .tar.gz backup of the save
+# ---------------------------------------------------------------------------
+
+class BackupRequest(BaseModel):
+    subdirectory: str | None = None
+    turn: int | None = None
+    nation: str | None = None
+    max_keep: int = 30
+
+
+@router.post(
+    "/{game_id}/backup",
+    summary="Create a .tar.gz backup of the game save",
+    description=(
+        "Tars `MultiplayerFiles/{game_id}` (+ preview) into the backup directory "
+        "(optionally a `subdirectory`) as `{turn}_{nation}_{ts}.tar.gz`. "
+        "Spectate-compatible: loadable back via `POST /games/{id}/spectate`. "
+        "Keeps at most `max_keep` newest archives in the directory."
+    ),
+)
+async def create_game_backup(game_id: str, body: BackupRequest):
+    _validate_game_id(game_id)
+    backup_dir = settings.get_backup_path()
+    if body.subdirectory:
+        backup_dir = f"{backup_dir}/{body.subdirectory}"
+    loop = asyncio.get_event_loop()
+    try:
+        name = await loop.run_in_executor(None, lambda: create_backup(
+            game_id, backup_dir=backup_dir, turn=body.turn,
+            nation=body.nation, max_keep=body.max_keep))
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return {"ok": True, "backup_name": name, "subdirectory": body.subdirectory}
 
 
 # ---------------------------------------------------------------------------

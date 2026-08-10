@@ -84,6 +84,42 @@ async def get_preview_dict(game_id: str) -> dict:
     return decode_save(raw.strip())
 
 
+def create_backup(game_id: str, *, backup_dir: str, turn=None,
+                  nation: str | None = None, max_keep: int = 30) -> str:
+    """Tar the save (+ preview) into ``backup_dir`` as ``{turn}_{nation}_{ts}.tar.gz``.
+
+    Spectate-совместимый архив: сам сейв под arcname = game_id (в имени есть дефис),
+    preview под ``{game_id}_Preview`` — ровно то, что ищет ``load_spectate_backup``.
+    Ротация: в каталоге остаётся не более ``max_keep`` свежих архивов. Возвращает
+    имя созданного файла.
+    """
+    save = _local_path(game_id)
+    if not save.is_file():
+        raise FileNotFoundError(f"Game file not found: {game_id}")
+    preview = _preview_path(game_id)
+    bdir = Path(backup_dir)
+    bdir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    prefix = f"{turn}_{nation}_" if (turn is not None and nation) else ""
+    name = f"{prefix}{ts}.tar.gz"
+    archive = bdir / name
+    with tarfile.open(archive, "w:gz") as tar:
+        tar.add(save, arcname=game_id)
+        if preview.is_file():
+            tar.add(preview, arcname=f"{game_id}_Preview")
+    if max_keep and max_keep > 0:
+        files = sorted(
+            [p for p in bdir.iterdir() if p.is_file() and p.name.endswith(".tar.gz")],
+            key=lambda p: p.stat().st_mtime,
+        )
+        for old in files[:-max_keep]:
+            try:
+                old.unlink()
+            except OSError:
+                pass
+    return name
+
+
 def write_save(game_id: str, raw: str) -> None:
     """Atomically write a save file to MultiplayerFiles."""
     path = _local_path(game_id)
