@@ -1,19 +1,22 @@
 """Game endpoints: info, map-check, start."""
 import asyncio
+import json
 import logging
 import re
 import tarfile
 
 logger = logging.getLogger(__name__)
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from app.config import settings
 from app.game.fetcher import (
     get_save_dict, get_preview_dict, list_all_games, get_file_created_at,
-    delete_game, patch_prophet, load_spectate_backup, write_save, create_backup,
+    delete_game, patch_prophet, load_spectate_backup, write_save, write_preview,
+    create_backup,
 )
+from app.game.parser import decode_save, encode_save
 from app.game.static_data import CITY_STATES
 from app.launchers import get_launcher
 from app.services.map_checker import check_map
@@ -498,6 +501,86 @@ async def create_game_backup(game_id: str, body: BackupRequest):
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     return {"ok": True, "backup_name": name, "subdirectory": body.subdirectory}
+
+
+# ---------------------------------------------------------------------------
+# POST /games/{game_id}/save и /preview — залить готовый файл игры/превью
+# ---------------------------------------------------------------------------
+
+def _normalize_to_encoded(raw: bytes) -> str:
+    """Привести загруженное тело к on-disk формату (gzip+base64 текст).
+
+    Принимаем оба варианта, как исторически слал бот:
+    - декодированный JSON сейва → кодируем `encode_save`;
+    - уже закодированный сейв (base64+gzip) → пишем как есть, но валидируем через
+      `decode_save` (мусор отбиваем 400).
+    """
+    text = raw.decode("utf-8", errors="strict").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="empty body")
+    try:
+        parsed = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        parsed = None
+    if parsed is not None:
+        return encode_save(parsed)
+    try:
+        decode_save(text)  # валидируем уже-закодированный сейв
+    except Exception:
+        raise HTTPException(status_code=400,
+                            detail="body is neither JSON save nor encoded save")
+    return text
+
+
+async def _safety_backup(game_id: str) -> None:
+    """Best-effort бэкап перед перезаписью (как backup=True в монолите)."""
+    loop = asyncio.get_event_loop()
+    try:
+        await loop.run_in_executor(None, lambda: create_backup(
+            game_id, backup_dir=settings.get_backup_path(), max_keep=30))
+    except FileNotFoundError:
+        pass  # файла ещё нет (первая заливка) — бэкапить нечего
+    except Exception:
+        logger.exception("safety backup перед заливкой не удался: %s", game_id)
+
+
+@router.post(
+    "/{game_id}/save",
+    summary="Upload/replace the full game save file",
+    description=(
+        "Body — сам сейв: декодированный JSON (сервис закодирует) либо уже "
+        "закодированный (base64+gzip) текст. Атомарная запись в "
+        "MultiplayerFiles/{game_id}. По умолчанию перед перезаписью снимается "
+        "safety-бэкап (?backup=false — отключить)."
+    ),
+)
+async def upload_game_save(game_id: str, request: Request,
+                           backup: bool = Query(True)):
+    _validate_game_id(game_id)
+    raw = await request.body()
+    encoded = _normalize_to_encoded(raw)
+    if backup:
+        await _safety_backup(game_id)
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, write_save, game_id, encoded)
+    return {"ok": True, "game_id": game_id, "bytes": len(encoded)}
+
+
+@router.post(
+    "/{game_id}/preview",
+    summary="Upload/replace the game preview file",
+    description=(
+        "Body — превью-файл: декодированный JSON (сервис закодирует) либо уже "
+        "закодированный текст. Атомарная запись в MultiplayerFiles/{game_id}_Preview."
+    ),
+)
+async def upload_game_preview(game_id: str, request: Request):
+    _validate_game_id(game_id)
+    raw = await request.body()
+    encoded = _normalize_to_encoded(raw)
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, write_preview, game_id, encoded)
+    return {"ok": True, "game_id": game_id, "bytes": len(encoded)}
 
 
 # ---------------------------------------------------------------------------
