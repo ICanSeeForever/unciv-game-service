@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI
 
 from app.auth import verify_api_key
+from app.routers.backups import router as backups_router
 from app.routers.games import router as games_router
 from app.routers.tasks import router as tasks_router
 from app.services.task_manager import start_cleanup_task
@@ -59,6 +60,7 @@ _auth = [Depends(verify_api_key)]
 
 app.include_router(games_router, dependencies=_auth)
 app.include_router(tasks_router, dependencies=_auth)
+app.include_router(backups_router, dependencies=_auth)
 
 
 @app.get("/health", tags=["health"], summary="Health check")
