@@ -727,6 +727,13 @@ class StartGameRequest(BaseModel):
     noupdate: bool = False
     jar_url: str | None = None
     mod_git_url: str | None = None
+    # Пороги проверки карты (None → дефолты game-service settings.expect_*).
+    min_distance: int | None = None
+    max_distance: int | None = None
+    min_luxuries: int | None = None
+    min_unique_luxuries: int | None = None
+    min_land_per_player: int | None = None
+    max_land_per_player: int | None = None
 
 
 @router.post(
@@ -808,7 +815,15 @@ async def _run_start_game(task, body: StartGameRequest) -> None:
                 await update_task(task, status=TaskStatus.done, result={"game_id": game_id})
                 return
 
-            result = check_map(save)
+            result = check_map(
+                save,
+                min_distance=body.min_distance,
+                max_distance=body.max_distance,
+                min_luxuries=body.min_luxuries,
+                min_unique_luxuries=body.min_unique_luxuries,
+                min_land_per_player=body.min_land_per_player,
+                max_land_per_player=body.max_land_per_player,
+            )
             if result.ok:
                 await update_task(task, status=TaskStatus.done, result={"game_id": game_id})
                 return
