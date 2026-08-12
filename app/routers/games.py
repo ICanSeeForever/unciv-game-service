@@ -768,10 +768,19 @@ async def _run_start_game(task, body: StartGameRequest) -> None:
 
         await update_task(task, status=TaskStatus.running)
 
+        if body.mod_git_url:
+            task.add_log("⬇️ Обновление мода...")
+            try:
+                await launcher.clone_mod(body.mod_git_url)
+                task.add_log("✅ Мод обновлён.")
+            except Exception as e:
+                await update_task(task, status=TaskStatus.failed, error=f"Ошибка обновления мода: {e}")
+                return
+
         if not body.noupdate and body.jar_url:
             task.add_log("⬇️ Обновление Unciv.jar...")
             try:
-                await launcher.update(body.jar_url, body.mod_git_url)
+                await launcher.update(body.jar_url)
                 task.add_log("✅ Unciv.jar обновлён.")
             except Exception as e:
                 await update_task(task, status=TaskStatus.failed, error=f"Ошибка обновления jar: {e}")

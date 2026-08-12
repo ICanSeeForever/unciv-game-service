@@ -12,13 +12,11 @@ class GameLauncher(abc.ABC):
         Returns stdout output from the jar invocation.
         """
 
-    async def update(self, jar_url: str, mod_git_url: str | None = None) -> None:
-        """Download/update Unciv.jar (and optionally mods) before game creation.
+    async def update(self, jar_url: str) -> None:
+        """Download/update Unciv.jar before game creation. Default is a no-op."""
 
-        Local launcher: downloads zip, extracts jar.
-        SSH launcher: SSHes in, wgets zip, unzips, clones mod.
-        Override in subclasses; default is a no-op.
-        """
+    async def clone_mod(self, mod_git_url: str) -> None:
+        """Fresh-clone mod into Unciv mods directory. Default is a no-op."""
 
     def _write_config_tmp(self, config: dict) -> str:
         tmp = tempfile.NamedTemporaryFile(

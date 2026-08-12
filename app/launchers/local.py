@@ -13,8 +13,8 @@ from app.launchers.base import GameLauncher
 
 
 class LocalGameLauncher(GameLauncher):
-    async def update(self, jar_url: str, mod_git_url: str | None = None) -> None:
-        """Download zip from jar_url and extract Unciv.jar; clone mod if provided."""
+    async def update(self, jar_url: str) -> None:
+        """Download zip from jar_url and extract Unciv.jar."""
         async with httpx.AsyncClient(follow_redirects=True, timeout=300) as client:
             resp = await client.get(jar_url)
             resp.raise_for_status()
@@ -28,10 +28,7 @@ class LocalGameLauncher(GameLauncher):
             jar_path.parent.mkdir(parents=True, exist_ok=True)
             jar_path.write_bytes(z.read(jar_entries[0]))
 
-        if mod_git_url:
-            await self._clone_mod(mod_git_url)
-
-    async def _clone_mod(self, mod_git_url: str) -> None:
+    async def clone_mod(self, mod_git_url: str) -> None:
         """Fresh-clone the mod into the Unciv mods directory, wiping any existing copy.
 
         mod_git_url format: https://github.com/Owner/Repo-name/tree/branch

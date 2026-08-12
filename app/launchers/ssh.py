@@ -26,8 +26,8 @@ class SSHGameLauncher(GameLauncher):
             return f"echo {settings.ssh_sudo_password!r} | sudo -S sh -c {cmd!r}"
         return cmd
 
-    async def update(self, jar_url: str, mod_git_url: str | None = None) -> None:
-        """Download Unciv zip to remote host, unzip, and optionally clone mod."""
+    async def update(self, jar_url: str) -> None:
+        """Download Unciv zip to remote host, unzip."""
         work_dir = settings.ssh_unciv_work_dir
 
         async with asyncssh.connect(**self._connect_kwargs()) as conn:
@@ -49,25 +49,28 @@ class SSHGameLauncher(GameLauncher):
                 check=True,
             )
 
-            if mod_git_url:
-                # Parse https://github.com/user/Mod/tree/branch
-                parts = mod_git_url.split("/tree/")
-                base_url = parts[0].rstrip("/")
-                branch = parts[1] if len(parts) > 1 else "main"
-                mod_name = base_url.split("/")[-1].replace("-", " ")
+    async def clone_mod(self, mod_git_url: str) -> None:
+        """Fresh-clone mod into remote Unciv mods directory."""
+        work_dir = settings.ssh_unciv_work_dir
+        # Parse https://github.com/user/Mod/tree/branch
+        parts = mod_git_url.split("/tree/")
+        base_url = parts[0].rstrip("/")
+        branch = parts[1] if len(parts) > 1 else "main"
+        mod_name = base_url.split("/")[-1].replace("-", " ")
 
-                await conn.run(
-                    self._sudo(f"mkdir -p '{work_dir}/mods/{mod_name}'"),
-                    check=True,
-                )
-                await conn.run(
-                    self._sudo(
-                        f"sh -c 'cd \"{work_dir}/mods/{mod_name}\" "
-                        f"&& git clone --branch {branch} --depth 1 {base_url}.git . "
-                        f"&& rm -rf .git'"
-                    ),
-                    check=True,
-                )
+        async with asyncssh.connect(**self._connect_kwargs()) as conn:
+            await conn.run(
+                self._sudo(f"rm -rf '{work_dir}/mods/{mod_name}' && mkdir -p '{work_dir}/mods/{mod_name}'"),
+                check=True,
+            )
+            await conn.run(
+                self._sudo(
+                    f"sh -c 'cd \"{work_dir}/mods/{mod_name}\" "
+                    f"&& git clone --branch {branch} --depth 1 {base_url}.git . "
+                    f"&& rm -rf .git'"
+                ),
+                check=True,
+            )
 
     async def launch(self, config: dict) -> str:
         config_json = json.dumps(config, ensure_ascii=False)
