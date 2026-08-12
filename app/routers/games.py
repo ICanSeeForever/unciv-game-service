@@ -14,7 +14,7 @@ from app.config import settings
 from app.game.fetcher import (
     get_save_dict, get_preview_dict, list_all_games, get_file_created_at,
     delete_game, patch_prophet, load_spectate_backup, write_save, write_preview,
-    create_backup,
+    create_backup, restore_backup, make_single_player,
 )
 from app.game.parser import decode_save, encode_save
 from app.game.static_data import CITY_STATES
@@ -623,6 +623,84 @@ async def load_spectate_game(game_id: str, body: SpectateRequest):
     except (ValueError, tarfile.TarError) as e:
         raise HTTPException(status_code=422, detail=str(e))
     return {"ok": True, "game_id": game_id, "spec_id": spec_id}
+
+
+# ---------------------------------------------------------------------------
+# POST /games/{game_id}/restore  — restore save+preview from a backup archive
+# ---------------------------------------------------------------------------
+
+class RestoreRequest(BaseModel):
+    backup_name: str
+    subdirectory: str | None = None
+    safety_backup: bool = True
+
+
+@router.post(
+    "/{game_id}/restore",
+    summary="Restore the live save from a backup archive (destructive)",
+    description=(
+        "Extracts the save (+preview) from a `.tar.gz` backup and overwrites "
+        "`MultiplayerFiles/{game_id}`. Used by core `/rollback` `/reload` "
+        "`/loadgame` `/loadrotate`. `backup_name` is the filename inside the "
+        "backup dir; optional `subdirectory` (e.g. `rotate/game27` or `game27`). "
+        "By default a safety backup of the current live file is taken first."
+    ),
+)
+async def restore_game(game_id: str, body: RestoreRequest):
+    _validate_game_id(game_id)
+    from pathlib import Path as _Path
+
+    sub = (body.subdirectory or "").strip("/")
+    if sub and ".." in sub.split("/"):
+        raise HTTPException(status_code=400, detail="bad subdirectory")
+    backup_dir = settings.get_backup_path()
+    if sub:
+        backup_dir = f"{backup_dir}/{sub}"
+    backup_file = _Path(backup_dir) / body.backup_name
+    if not backup_file.is_file():
+        raise HTTPException(status_code=404, detail=f"Backup not found: {backup_file}")
+
+    loop = asyncio.get_event_loop()
+    try:
+        result = await loop.run_in_executor(
+            None, lambda: restore_backup(
+                backup_file, game_id, safety_backup=body.safety_backup))
+    except (ValueError, tarfile.TarError) as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    return {"ok": True, "game_id": game_id, **result}
+
+
+# ---------------------------------------------------------------------------
+# POST /games/{game_id}/single  — convert save to single-player with manual civs
+# ---------------------------------------------------------------------------
+
+class SingleRequest(BaseModel):
+    nations: list[str] = []
+
+
+@router.post(
+    "/{game_id}/single",
+    summary="Convert a save to single-player with manual nations",
+    description=(
+        "Returns the decoded save patched for single-player: "
+        "`isOnlineMultiplayer=false`, difficulty `King`, the listed nations set "
+        "to `playerType=Human` and `playerType` removed from the rest. "
+        "Unknown nations (not present in the save) → 422 with the missing list. "
+        "Used by core `/getsingle`; the caller ships the JSON back to the admin."
+    ),
+)
+async def game_single(game_id: str, body: SingleRequest):
+    _validate_game_id(game_id)
+    try:
+        save = await get_save_dict(game_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    try:
+        return make_single_player(save, body.nations)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=422,
+            detail={"missing_nations": str(e).split(",") if str(e) else []})
 
 
 # ---------------------------------------------------------------------------

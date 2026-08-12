@@ -137,6 +137,68 @@ def write_preview(game_id: str, raw: str) -> None:
     tmp.rename(path)
 
 
+def restore_backup(backup_file: Path, target_game_id: str, *,
+                   safety_backup: bool = True) -> dict:
+    """Восстановить сейв (+preview) из бэкап-архива в живую игру target_game_id.
+
+    Деструктивно: перезаписывает ``MultiplayerFiles/{target_game_id}`` (и preview).
+    Перед перезаписью (по умолчанию) снимается safety-бэкап текущего файла — как
+    ``backup=True`` в монолите. Архив — спектат-совместимый ``.tar.gz`` из
+    ``create_backup`` (сейв под arcname = game_id, preview под ``{id}_Preview``).
+    Возвращает ``{"save": bool, "preview": bool}``.
+    """
+    if not backup_file.is_file():
+        raise FileNotFoundError(f"Backup not found: {backup_file}")
+    if safety_backup:
+        try:
+            create_backup(target_game_id, backup_dir=settings.get_backup_path(),
+                          max_keep=30)
+        except FileNotFoundError:
+            pass  # живого файла ещё нет (первая заливка) — бэкапить нечего
+    restored = {"save": False, "preview": False}
+    with tarfile.open(backup_file, "r:gz") as tar:
+        for member in tar.getmembers():
+            if not member.isfile():
+                continue
+            extracted = tar.extractfile(member)
+            if extracted is None:
+                continue
+            content = extracted.read().decode("utf-8")
+            base = os.path.basename(member.name)
+            if base.endswith("_Preview"):
+                write_preview(target_game_id, content)
+                restored["preview"] = True
+            else:
+                write_save(target_game_id, content)
+                restored["save"] = True
+    if not restored["save"]:
+        raise ValueError("no save file in backup archive")
+    return restored
+
+
+def make_single_player(save: dict, nations: list[str]) -> dict:
+    """Перевести сейв в синглплеер с ручными нациями (порт /getsingle-трансформа).
+
+    - ``isOnlineMultiplayer=False``, сложность ``King``;
+    - указанные нации → ``playerType=Human``, у остальных ``playerType`` снимается.
+    Валидация: нации должны присутствовать в сейве, иначе ``ValueError`` со списком.
+    """
+    civ_names = {c.get("civName") for c in save.get("civilizations", [])}
+    missing = [n for n in nations if n not in civ_names]
+    if missing:
+        raise ValueError(",".join(missing))
+    params = save.setdefault("gameParameters", {})
+    params["isOnlineMultiplayer"] = False
+    params["difficulty"] = "King"
+    save["difficulty"] = "King"
+    for civ in save.get("civilizations", []):
+        if civ.get("civName") in nations:
+            civ["playerType"] = "Human"
+        elif "playerType" in civ:
+            del civ["playerType"]
+    return save
+
+
 def _parse_game_file(path: Path) -> tuple[dict, float] | None:
     """Parse a single save file; return (game_dict, created_at) or None on error."""
     try:
