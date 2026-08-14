@@ -1096,6 +1096,38 @@ async def game_veto(
 # GET /games/{game_id}/prophet  — prophet purchase counts per nation
 # ---------------------------------------------------------------------------
 
+@router.get("/{game_id}/save-raw", summary="Decoded main save file (for admin download)")
+async def game_save_raw(game_id: str):
+    _validate_game_id(game_id)
+    try:
+        return await get_save_dict(game_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+class PatchSpeedRequest(BaseModel):
+    speed: str
+
+
+@router.post("/{game_id}/patch-speed", summary="Patch gameParameters.speed in save and preview")
+async def patch_speed(game_id: str, body: PatchSpeedRequest):
+    _validate_game_id(game_id)
+    loop = asyncio.get_event_loop()
+    try:
+        save = await get_save_dict(game_id)
+        save.setdefault("gameParameters", {})["speed"] = body.speed
+        await loop.run_in_executor(None, write_save, game_id, encode_save(save))
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    try:
+        preview = await get_preview_dict(game_id)
+        preview.setdefault("gameParameters", {})["speed"] = body.speed
+        await loop.run_in_executor(None, write_preview, game_id, encode_save(preview))
+    except Exception:
+        pass
+    return {"ok": True, "speed": body.speed}
+
+
 @router.get("/{game_id}/prophet", summary="Great Prophet purchase counts per nation")
 async def get_prophet(game_id: str):
     _validate_game_id(game_id)
