@@ -111,6 +111,9 @@ async def spectator_state(game_id: str):
             "improvement": tile.get("improvement"),
             "roadStatus": tile.get("roadStatus"),
             "owningCiv": owners.get((x, y)),
+            "hasBottomRiver": bool(tile.get("hasBottomRiver")),
+            "hasBottomLeftRiver": bool(tile.get("hasBottomLeftRiver")),
+            "hasBottomRightRiver": bool(tile.get("hasBottomRightRiver")),
         })
 
     game_params = save.get("gameParameters") or {}
