@@ -185,3 +185,20 @@ async def backup_latest_save(
     if save is None:
         raise HTTPException(status_code=404, detail="No matching save in backups")
     return {"game": folder, "save": save}
+
+
+@router.get("/{folder}/great-people", summary="Великие люди по бэкапам (без Пророка)")
+async def backup_great_people(
+    folder: str,
+    game_id: str | None = Query(default=None, description="Фильтр по Unciv GAME_ID"),
+):
+    base = _backup_base(folder.strip("/"))
+    loop = asyncio.get_event_loop()
+    fn = functools.partial(
+        backup_scan.great_people_from_backups,
+        base,
+        folder,
+        game_id=game_id or "",
+    )
+    counts = await loop.run_in_executor(None, fn)
+    return {"game": folder, "great_people": counts}

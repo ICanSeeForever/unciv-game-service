@@ -17,6 +17,18 @@ _POLICY_BRANCHES = frozenset({
     "Tradition", "Liberty", "Honor", "Piety", "Patronage",
     "Aesthetics", "Commerce", "Exploration", "Rationalism",
 })
+# First-seen GP units on the map (exclude Prophet). UU names like
+# "Merchant of Venice" still match the keyword.
+_GP_KEYWORDS = (
+    ("Scientist", "Scientist"),
+    ("Engineer", "Engineer"),
+    ("Merchant", "Merchant"),
+    ("Musician", "Musician"),
+    ("Artist", "Artist"),
+    ("Writer", "Writer"),
+    ("Admiral", "Admiral"),
+    ("General", "General"),
+)
 
 
 def _turn_sort_key(path: Path) -> tuple[int, float]:
@@ -227,3 +239,60 @@ def latest_save_from_backups(
         if game:
             return game
     return None
+
+
+def classify_great_person(unit_name: str) -> str | None:
+    """Map a unit name to a Games.json GP type, or ``None``.
+
+    Prophet is excluded: free/faith prophets would inflate the factory record.
+    """
+    name = (unit_name or "").strip()
+    if not name or "Prophet" in name:
+        return None
+    for needle, short in _GP_KEYWORDS:
+        if needle in name:
+            return short
+    return None
+
+
+def great_people_from_backups(
+    base: Path,
+    folder: str,
+    *,
+    game_id: str = "",
+) -> dict[str, dict[str, int]]:
+    """Count first-seen Great Person units per nation (exclude Prophet).
+
+    Считает первых появлений ВЛ по нациям (без Пророка).
+    """
+    measurement = folder.strip().lower()
+    paths = _archive_paths(base, folder)
+    seen_ids: set[str] = set()
+    counts: dict[str, dict[str, int]] = {}
+    for archive in paths:
+        game = _load_save_from_tar(
+            archive, game_id=game_id, measurement=measurement,
+        )
+        if not game:
+            continue
+        tiles = (game.get("tileMap") or {}).get("tileList") or []
+        for tile in tiles:
+            if not isinstance(tile, dict):
+                continue
+            for key in ("civilianUnit", "militaryUnit"):
+                unit = tile.get(key)
+                if not isinstance(unit, dict):
+                    continue
+                uid = str(unit.get("id") or "").strip()
+                if not uid or uid in seen_ids:
+                    continue
+                gp_type = classify_great_person(str(unit.get("name") or ""))
+                if not gp_type:
+                    continue
+                seen_ids.add(uid)
+                owner = str(unit.get("owner") or "").strip()
+                if not owner or owner in _SKIP_CIV:
+                    continue
+                bucket = counts.setdefault(owner, {})
+                bucket[gp_type] = bucket.get(gp_type, 0) + 1
+    return counts
