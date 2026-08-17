@@ -54,8 +54,10 @@ async def spectator_state(game_id: str):
     for tile in tile_map.get("tileList") or []:
         if not isinstance(tile, dict):
             continue
+        # libGDX Json omits `position` when it equals the default Vector2(0,0),
+        # so a missing position means the origin tile (0, 0).
         pos = tile.get("position") or {}
-        x, y = pos.get("x"), pos.get("y")
+        x, y = pos.get("x", 0), pos.get("y", 0)
         tiles.append({
             "x": x,
             "y": y,
