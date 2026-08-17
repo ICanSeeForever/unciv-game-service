@@ -28,6 +28,50 @@ def _tile_owner_by_position(save: dict) -> dict[tuple, str]:
     return owners
 
 
+def _extract_units(save: dict) -> list[dict]:
+    """Units on the map, from each tile's civilian/military unit slots."""
+    units: list[dict] = []
+    for tile in (save.get("tileMap") or {}).get("tileList") or []:
+        if not isinstance(tile, dict):
+            continue
+        pos = tile.get("position") or {}
+        x, y = pos.get("x", 0), pos.get("y", 0)
+        for key in ("civilianUnit", "militaryUnit"):
+            unit = tile.get(key)
+            if not isinstance(unit, dict):
+                continue
+            health = unit.get("health")
+            units.append({
+                "x": x,
+                "y": y,
+                "name": unit.get("name") or "",
+                "owner": unit.get("owner") or unit.get("originalOwner"),
+                "military": key == "militaryUnit",
+                "health": int(health) if health is not None else 100,
+            })
+    return units
+
+
+def _extract_cities(save: dict) -> list[dict]:
+    """Cities with current owner and capital flag (Palace = current capital)."""
+    cities: list[dict] = []
+    for civ in save.get("civilizations") or []:
+        owner = civ.get("civName")
+        for city in civ.get("cities") or []:
+            loc = city.get("location") or {}
+            constructions = city.get("cityConstructions") or {}
+            built = constructions.get("builtBuildings") or []
+            is_capital = "Palace" in built or bool(city.get("isOriginalCapital"))
+            cities.append({
+                "x": loc.get("x", 0),
+                "y": loc.get("y", 0),
+                "name": city.get("name") or "",
+                "owner": owner,
+                "isCapital": is_capital,
+            })
+    return cities
+
+
 @router.get(
     "/{game_id}/spectator-state",
     summary="Normalized spectator state for the web viewer (tiles + hex coords + mods)",
@@ -81,4 +125,6 @@ async def spectator_state(game_id: str):
         "baseRuleset": game_params.get("baseRuleset"),
         "mods": mods,
         "tiles": tiles,
+        "units": _extract_units(save),
+        "cities": _extract_cities(save),
     }
