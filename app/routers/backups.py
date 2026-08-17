@@ -8,6 +8,7 @@
 Эндпоинты только читают файловую систему, ничего не пишут.
 """
 import asyncio
+import functools
 import os
 import tarfile
 from pathlib import Path
@@ -16,6 +17,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from app.config import settings
 from app.game.parser import decode_save
+from app.services import backup_scan
 
 router = APIRouter(prefix="/backups", tags=["backups"])
 
@@ -124,3 +126,79 @@ async def backup_deaths(
     loop = asyncio.get_event_loop()
     deaths = await loop.run_in_executor(None, _count_military_deaths, archives, turn)
     return {"game": folder, "deaths": deaths}
+
+
+def _backup_base(folder_clean: str) -> Path:
+    if not folder_clean or ".." in folder_clean.split("/") or folder_clean in _RESERVED:
+        raise HTTPException(status_code=400, detail="bad folder")
+    base = Path(settings.get_backup_path()) / folder_clean
+    if not base.is_dir():
+        raise HTTPException(status_code=404, detail=f"No backup folder: {folder_clean}")
+    return base
+
+
+@router.get("/{folder}/turns", summary="Лучший TURNS из бэкапов игры")
+async def backup_turns(
+    folder: str,
+    game_id: str | None = Query(default=None, description="Фильтр по Unciv GAME_ID"),
+):
+    base = _backup_base(folder.strip("/"))
+    loop = asyncio.get_event_loop()
+    fn = functools.partial(
+        backup_scan.best_turns_from_backups, base, folder, game_id=game_id or "",
+    )
+    turns = await loop.run_in_executor(None, fn)
+    return {"game": folder, "turns": turns}
+
+
+@router.get("/{folder}/policy-order", summary="Порядок открытия веток институтов по бэкапам")
+async def backup_policy_order(
+    folder: str,
+    game_id: str | None = Query(default=None, description="Фильтр по Unciv GAME_ID"),
+):
+    base = _backup_base(folder.strip("/"))
+    loop = asyncio.get_event_loop()
+    fn = functools.partial(
+        backup_scan.policy_open_order_from_backups,
+        base,
+        folder,
+        game_id=game_id or "",
+    )
+    order = await loop.run_in_executor(None, fn)
+    return {"game": folder, "policy_order": order}
+
+
+@router.get("/{folder}/latest-save", summary="Последний сейв из бэкапов игры")
+async def backup_latest_save(
+    folder: str,
+    game_id: str | None = Query(default=None, description="Фильтр по Unciv GAME_ID"),
+):
+    base = _backup_base(folder.strip("/"))
+    loop = asyncio.get_event_loop()
+    fn = functools.partial(
+        backup_scan.latest_save_from_backups,
+        base,
+        folder,
+        game_id=game_id or "",
+    )
+    save = await loop.run_in_executor(None, fn)
+    if save is None:
+        raise HTTPException(status_code=404, detail="No matching save in backups")
+    return {"game": folder, "save": save}
+
+
+@router.get("/{folder}/great-people", summary="Великие люди по бэкапам (без Пророка)")
+async def backup_great_people(
+    folder: str,
+    game_id: str | None = Query(default=None, description="Фильтр по Unciv GAME_ID"),
+):
+    base = _backup_base(folder.strip("/"))
+    loop = asyncio.get_event_loop()
+    fn = functools.partial(
+        backup_scan.great_people_from_backups,
+        base,
+        folder,
+        game_id=game_id or "",
+    )
+    counts = await loop.run_in_executor(None, fn)
+    return {"game": folder, "great_people": counts}
