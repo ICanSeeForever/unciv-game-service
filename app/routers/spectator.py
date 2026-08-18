@@ -43,10 +43,14 @@ def _worked_positions(save: dict) -> set[tuple]:
 
 
 def _unit_trail(unit: dict) -> list[dict]:
-    """Recent tile positions of a unit (Unciv movementMemories), oldest first.
+    """Unit's recorded movement (Unciv movementMemories), oldest first.
 
-    Used to draw movement arrows. Consecutive duplicates are collapsed; the
-    current tile is appended by the caller so the last arrow ends on the unit.
+    Unciv keeps at most two memories — the unit's position at the start and end
+    of its last turn — and the movement arrow is the segment BETWEEN them. We
+    collapse duplicates, so an idle unit (equal memories) yields <2 points and
+    draws no arrow. We deliberately do NOT append the current tile: from a
+    spectator's viewpoint every unit is foreign, and the memory→current segment
+    is a stale drift that would draw spurious cross-map arrows.
     """
     trail: list[dict] = []
     for mem in unit.get("movementMemories") or []:
@@ -70,9 +74,6 @@ def _extract_units(save: dict) -> list[dict]:
             if not isinstance(unit, dict):
                 continue
             health = unit.get("health")
-            trail = _unit_trail(unit)
-            if not trail or trail[-1] != {"x": x, "y": y}:
-                trail.append({"x": x, "y": y})  # arrow ends on the unit's tile
             units.append({
                 "x": x,
                 "y": y,
