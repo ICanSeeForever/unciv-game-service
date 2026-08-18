@@ -42,23 +42,30 @@ def _worked_positions(save: dict) -> set[tuple]:
     return worked
 
 
-def _unit_trail(unit: dict) -> list[dict]:
-    """Unit's recorded movement (Unciv movementMemories), oldest first.
+def _unit_trail(unit: dict, cur_x: int, cur_y: int) -> list[dict]:
+    """Unit's recorded movement (Unciv movementMemories) as {x, y, type} points.
 
-    Unciv keeps at most two memories — the unit's position at the start and end
-    of its last turn — and the movement arrow is the segment BETWEEN them. We
-    collapse duplicates, so an idle unit (equal memories) yields <2 points and
-    draws no arrow. We deliberately do NOT append the current tile: from a
-    spectator's viewpoint every unit is foreign, and the memory→current segment
-    is a stale drift that would draw spurious cross-map arrows.
+    Mirrors Unciv updateMovementOverlay: an arrow is drawn to each point using
+    THAT point's move type (libGDX omits the default type "UnitMoved"), between
+    consecutive memories and finally from the last memory to the unit's current
+    tile using mostRecentMoveType. The arrow art encodes the type/colour
+    (UnitMoved=blue, UnitAttacked=red, UnitTeleported/UnitWithdrew=white).
+    Consecutive duplicate positions collapse so idle units draw nothing.
     """
-    trail: list[dict] = []
+    points: list[dict] = []
+
+    def push(x, y, mtype):
+        pt = {"x": x, "y": y, "type": mtype or "UnitMoved"}
+        if not points or (points[-1]["x"], points[-1]["y"]) != (x, y):
+            points.append(pt)
+        else:
+            points[-1]["type"] = pt["type"]  # keep the later type on a repeat
+
     for mem in unit.get("movementMemories") or []:
         pos = (mem or {}).get("position") or {}
-        point = {"x": pos.get("x", 0), "y": pos.get("y", 0)}
-        if not trail or trail[-1] != point:
-            trail.append(point)
-    return trail
+        push(pos.get("x", 0), pos.get("y", 0), (mem or {}).get("type"))
+    push(cur_x, cur_y, unit.get("mostRecentMoveType"))
+    return points
 
 
 def _extract_units(save: dict) -> list[dict]:
@@ -81,7 +88,7 @@ def _extract_units(save: dict) -> list[dict]:
                 "owner": unit.get("owner") or unit.get("originalOwner"),
                 "military": key == "militaryUnit",
                 "health": int(health) if health is not None else 100,
-                "trail": _unit_trail(unit),
+                "trail": _unit_trail(unit, x, y),
             })
     return units
 
