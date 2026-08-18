@@ -134,6 +134,34 @@ def _civ_attacks(save: dict) -> list[dict]:
     return out
 
 
+def _player_civs(save: dict) -> list[str]:
+    """Civs present on the map (own a city or a unit), for the vision-mode picker.
+
+    Excludes the Spectator pseudo-civ and Barbarians. City-states are kept here
+    (the frontend filters them out via its bundled nation metadata), so this stays
+    ruleset-agnostic on the backend.
+    """
+    unit_owners: set[str] = set()
+    for tile in (save.get("tileMap") or {}).get("tileList") or []:
+        if not isinstance(tile, dict):
+            continue
+        for key in ("civilianUnit", "militaryUnit"):
+            u = tile.get(key)
+            if isinstance(u, dict) and u.get("owner"):
+                unit_owners.add(u["owner"])
+        for u in tile.get("airUnits") or []:
+            if isinstance(u, dict) and u.get("owner"):
+                unit_owners.add(u["owner"])
+    out: list[str] = []
+    for civ in save.get("civilizations") or []:
+        name = civ.get("civName")
+        if not name or name in ("Spectator", "Barbarians"):
+            continue
+        if (civ.get("cities") or []) or name in unit_owners:
+            out.append(name)
+    return out
+
+
 def _majority_religion(city: dict) -> str | None:
     """City's majority religion = highest religious pressure (Unciv getMajorityReligion)."""
     pressures = ((city.get("religion") or {}).get("pressures")) or {}
@@ -231,6 +259,9 @@ async def spectator_state(game_id: str):
             "roadStatus": tile.get("roadStatus"),
             "owningCiv": owners.get((x, y)),
             "worked": (x, y) in worked,
+            # Civs that have ever revealed this tile (Unciv Tile.exploredBy) — drives
+            # per-nation fog of war in the viewer's vision mode.
+            "exploredBy": list(tile.get("exploredBy") or []),
             "hasBottomRiver": bool(tile.get("hasBottomRiver")),
             "hasBottomLeftRiver": bool(tile.get("hasBottomLeftRiver")),
             "hasBottomRightRiver": bool(tile.get("hasBottomRightRiver")),
@@ -251,4 +282,5 @@ async def spectator_state(game_id: str):
         "units": _extract_units(save),
         "cities": _extract_cities(save),
         "attacks": _civ_attacks(save),
+        "civs": _player_civs(save),
     }
