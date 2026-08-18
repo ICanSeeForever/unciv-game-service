@@ -157,7 +157,10 @@ def _extract_cities(save: dict) -> list[dict]:
             current = cc.get("currentConstructionFromQueue") or (queue[0] if queue else None)
             in_progress = cc.get("inProgressConstructions") or {}
             pop = city.get("population") or {}
-            is_capital = "Palace" in built or bool(city.get("isOriginalCapital"))
+            # Capital = holds a building that "Indicates the capital city"
+            # (Palace, or Hungary's Orszaggyules) — NOT isOriginalCapital, which
+            # stays true for former capitals that were moved/conquered.
+            is_capital = "Palace" in built or "Orszaggyules" in built
             cities.append({
                 "x": loc.get("x", 0),
                 "y": loc.get("y", 0),
