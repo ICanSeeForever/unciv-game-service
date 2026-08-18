@@ -81,7 +81,7 @@ def _extract_units(save: dict) -> list[dict]:
                 "owner": unit.get("owner") or unit.get("originalOwner"),
                 "military": key == "militaryUnit",
                 "health": int(health) if health is not None else 100,
-                "trail": trail,
+                "trail": _unit_trail(unit),
             })
     return units
 
