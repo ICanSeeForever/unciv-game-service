@@ -87,6 +87,9 @@ def _unit_record(unit: dict, x: int, y: int, *, military: bool, air: bool) -> di
         for a in (unit.get("attacksSinceTurnStart") or [])
         if isinstance(a, dict)
     ]
+    # Promotions drive the unit's exact sight range in vision mode (Scouting,
+    # Sentry, Extra Sight, …) on top of the base unit's own Sight uniques.
+    promotions = list(((unit.get("promotions") or {}).get("promotions")) or [])
     return {
         "x": x,
         "y": y,
@@ -98,6 +101,7 @@ def _unit_record(unit: dict, x: int, y: int, *, military: bool, air: bool) -> di
         "trail": _unit_trail(unit, x, y),
         "moveTo": move_to,
         "attacks": attacks,
+        "promotions": promotions,
     }
 
 
