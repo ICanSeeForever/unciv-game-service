@@ -31,6 +31,32 @@ def _tile_owner_by_position(save: dict) -> dict[tuple, str]:
     return owners
 
 
+def _worked_positions(save: dict) -> set[tuple]:
+    """Set of (x, y) tiles currently worked by a citizen of some city."""
+    worked: set[tuple] = set()
+    for civ in save.get("civilizations") or []:
+        for city in civ.get("cities") or []:
+            for pos in city.get("workedTiles") or []:
+                if isinstance(pos, dict):
+                    worked.add((pos.get("x", 0), pos.get("y", 0)))
+    return worked
+
+
+def _unit_trail(unit: dict) -> list[dict]:
+    """Recent tile positions of a unit (Unciv movementMemories), oldest first.
+
+    Used to draw movement arrows. Consecutive duplicates are collapsed; the
+    current tile is appended by the caller so the last arrow ends on the unit.
+    """
+    trail: list[dict] = []
+    for mem in unit.get("movementMemories") or []:
+        pos = (mem or {}).get("position") or {}
+        point = {"x": pos.get("x", 0), "y": pos.get("y", 0)}
+        if not trail or trail[-1] != point:
+            trail.append(point)
+    return trail
+
+
 def _extract_units(save: dict) -> list[dict]:
     """Units on the map, from each tile's civilian/military unit slots."""
     units: list[dict] = []
@@ -44,6 +70,9 @@ def _extract_units(save: dict) -> list[dict]:
             if not isinstance(unit, dict):
                 continue
             health = unit.get("health")
+            trail = _unit_trail(unit)
+            if not trail or trail[-1] != {"x": x, "y": y}:
+                trail.append({"x": x, "y": y})  # arrow ends on the unit's tile
             units.append({
                 "x": x,
                 "y": y,
@@ -51,6 +80,7 @@ def _extract_units(save: dict) -> list[dict]:
                 "owner": unit.get("owner") or unit.get("originalOwner"),
                 "military": key == "militaryUnit",
                 "health": int(health) if health is not None else 100,
+                "trail": trail,
             })
     return units
 
@@ -96,6 +126,7 @@ async def spectator_state(game_id: str):
     map_params = tile_map.get("mapParameters") or {}
     map_size = map_params.get("mapSize") or {}
     owners = _tile_owner_by_position(save)
+    worked = _worked_positions(save)
 
     tiles = []
     for tile in tile_map.get("tileList") or []:
@@ -114,6 +145,7 @@ async def spectator_state(game_id: str):
             "improvement": tile.get("improvement"),
             "roadStatus": tile.get("roadStatus"),
             "owningCiv": owners.get((x, y)),
+            "worked": (x, y) in worked,
             "hasBottomRiver": bool(tile.get("hasBottomRiver")),
             "hasBottomLeftRiver": bool(tile.get("hasBottomLeftRiver")),
             "hasBottomRightRiver": bool(tile.get("hasBottomRightRiver")),
