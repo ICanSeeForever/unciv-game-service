@@ -167,7 +167,9 @@ def _extract_cities(save: dict) -> list[dict]:
                 "name": city.get("name") or "",
                 "owner": owner,
                 "isCapital": is_capital,
-                "population": pop.get("population", 0),
+                # libGDX omits population when it's the class default (1), so a
+                # missing value means a size-1 city, not size 0.
+                "population": pop.get("population", 1),
                 "foodStored": pop.get("foodStored", 0),
                 "construction": ({"name": current, "workDone": in_progress.get(current, 0)}
                                  if current else None),
