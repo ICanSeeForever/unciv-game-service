@@ -5,15 +5,97 @@ frontend is public and renders exactly this data, so we expose a denormalized,
 read-only projection of the save instead of shipping the game-service API key
 to the web tier. Games are addressed by unguessable UUIDs.
 """
+import os
 import re
+import tarfile
+from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
+from app.config import settings
 from app.game.fetcher import get_save_dict
+from app.game.parser import decode_save
 
 router = APIRouter(prefix="/games", tags=["spectator"])
 
+# Second router (different prefix) for the game/turn browser the web viewer uses.
+browser = APIRouter(prefix="/spectator", tags=["spectator"])
+
 _GAME_ID_RE = re.compile(r"^[0-9a-f-]{32,}$", re.IGNORECASE)
+_RESERVED_FOLDERS = {"trash", "rotate"}
+
+
+def _backup_folder(name: str) -> Path:
+    """Validated path to a per-game backup folder (guards against traversal)."""
+    clean = name.strip("/")
+    if not clean or ".." in clean.split("/") or clean in _RESERVED_FOLDERS:
+        raise HTTPException(status_code=400, detail="bad game name")
+    path = Path(settings.get_backup_path()) / clean
+    if not path.is_dir():
+        raise HTTPException(status_code=404, detail=f"No backup folder: {name}")
+    return path
+
+
+def _archives(folder: Path) -> list[Path]:
+    """The folder's .tar.gz backups, oldest → newest (matches /spectate ordering)."""
+    files = [p for p in folder.iterdir() if p.is_file() and p.name.endswith(".tar.gz")]
+    files.sort(key=lambda p: p.stat().st_mtime)
+    return files
+
+
+def _turns_of(folder: Path) -> list[int]:
+    """Sorted unique turn numbers, parsed from the ``{turn}_...`` filename prefix."""
+    turns: set[int] = set()
+    for p in _archives(folder):
+        head = p.name.split("_", 1)[0]
+        if head.isdigit():
+            turns.add(int(head))
+    return sorted(turns)
+
+
+def _save_member(tar: tarfile.TarFile):
+    """The main save entry inside a backup archive (UUID-named, not the preview)."""
+    for member in tar.getmembers():
+        base = os.path.basename(member.name)
+        if "-" in base and "Preview" not in base:
+            return member
+    return None
+
+
+def _resolve_uuid(folder: Path) -> str | None:
+    """The game's live UUID, read from the save entry name inside its first backup."""
+    for archive in _archives(folder):
+        try:
+            with tarfile.open(archive, "r:gz") as tar:
+                member = _save_member(tar)
+                if member:
+                    return os.path.basename(member.name)
+        except (tarfile.TarError, OSError):
+            continue
+    return None
+
+
+def _extract_backup_save(folder: Path, turn: int) -> dict:
+    """Decode the save for a given turn straight from its backup archive (no disk write)."""
+    archive = next((p for p in _archives(folder) if p.name.split("_", 1)[0] == str(turn)), None)
+    if archive is None:
+        raise HTTPException(status_code=404, detail=f"No backup for turn {turn}")
+    try:
+        with tarfile.open(archive, "r:gz") as tar:
+            member = _save_member(tar)
+            f = tar.extractfile(member) if member else None
+            if f is None:
+                raise HTTPException(status_code=500, detail="No save inside backup archive")
+            return decode_save(f.read().decode("utf-8").strip())
+    except (tarfile.TarError, OSError) as e:
+        raise HTTPException(status_code=500, detail=f"Bad backup archive: {e}")
+
+
+def _has_live_save(uuid: str | None) -> bool:
+    """Whether a live (in-data) save exists in MultiplayerFiles for this UUID."""
+    if not uuid:
+        return False
+    return (Path(settings.civ_path) / "MultiplayerFiles" / uuid).is_file()
 
 
 def _tile_owner_by_position(save: dict) -> dict[tuple, str]:
@@ -237,7 +319,11 @@ async def spectator_state(game_id: str):
         save = await get_save_dict(game_id)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    return _build_state(save, game_id)
 
+
+def _build_state(save: dict, game_id: str) -> dict:
+    """Denormalize a decoded save into the viewer's spectator-state shape."""
     tile_map = save.get("tileMap") or {}
     map_params = tile_map.get("mapParameters") or {}
     map_size = map_params.get("mapSize") or {}
@@ -288,3 +374,59 @@ async def spectator_state(game_id: str):
         "attacks": _civ_attacks(save),
         "civs": _player_civs(save),
     }
+
+
+# ---------------------------------------------------------------------------
+# Game/turn browser for the web viewer's dropdown + turn switcher.
+#
+# A "game" here is a per-game backup folder (the same set /spectate offers). Each
+# archive is named ``{turn}_{nation}_{ts}.tar.gz`` and carries the game's save
+# (UUID-named) inside. If that UUID still has a live save in MultiplayerFiles the
+# game is "current" (in data) and the viewer can load the live state directly;
+# otherwise only past turns from backups are available.
+# ---------------------------------------------------------------------------
+
+
+@browser.get("/games", summary="Games available to spectate (backup folders)")
+async def list_games():
+    base = Path(settings.get_backup_path())
+    if not base.is_dir():
+        return {"games": []}
+    names = sorted(
+        d.name for d in base.iterdir()
+        if d.is_dir() and d.name not in _RESERVED_FOLDERS
+    )
+    return {"games": names}
+
+
+@browser.get("/games/{name}", summary="Turn list + live-save availability for a game")
+async def game_detail(name: str):
+    folder = _backup_folder(name)
+    uuid = _resolve_uuid(folder)
+    return {
+        "name": name,
+        "turns": _turns_of(folder),
+        "currentGameId": uuid,
+        "hasCurrent": _has_live_save(uuid),
+    }
+
+
+@browser.get("/games/{name}/state", summary="Spectator state for a game at a turn (or live)")
+async def game_state(
+    name: str,
+    turn: str = Query(..., description='Turn number, or "current" for the live save'),
+):
+    folder = _backup_folder(name)
+    if turn == "current":
+        uuid = _resolve_uuid(folder)
+        if not _has_live_save(uuid):
+            raise HTTPException(status_code=404, detail="No live save for this game")
+        try:
+            save = await get_save_dict(uuid)
+        except FileNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        return _build_state(save, uuid)
+    if not turn.isdigit():
+        raise HTTPException(status_code=400, detail="turn must be a number or 'current'")
+    save = _extract_backup_save(folder, int(turn))
+    return _build_state(save, f"{name}@{turn}")

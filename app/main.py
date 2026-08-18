@@ -6,6 +6,7 @@ from app.auth import verify_api_key
 from app.routers.backups import router as backups_router
 from app.routers.games import router as games_router
 from app.routers.spectator import router as spectator_router
+from app.routers.spectator import browser as spectator_browser_router
 from app.routers.tasks import router as tasks_router
 from app.services.task_manager import start_cleanup_task
 
@@ -64,6 +65,7 @@ app.include_router(tasks_router, dependencies=_auth)
 app.include_router(backups_router, dependencies=_auth)
 # Public, read-only projection for the web viewer (no API key by design).
 app.include_router(spectator_router)
+app.include_router(spectator_browser_router)
 
 
 @app.get("/health", tags=["health"], summary="Health check")
