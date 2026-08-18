@@ -134,15 +134,29 @@ def _civ_attacks(save: dict) -> list[dict]:
     return out
 
 
+def _majority_religion(city: dict) -> str | None:
+    """City's majority religion = highest religious pressure (Unciv getMajorityReligion)."""
+    pressures = ((city.get("religion") or {}).get("pressures")) or {}
+    if not pressures:
+        return None
+    name, value = max(pressures.items(), key=lambda kv: kv[1])
+    return name if value > 0 else None
+
+
 def _extract_cities(save: dict) -> list[dict]:
-    """Cities with current owner and capital flag (Palace = current capital)."""
+    """Cities with the data the web viewer's city button plate needs (Unciv CityButton)."""
     cities: list[dict] = []
     for civ in save.get("civilizations") or []:
         owner = civ.get("civName")
+        owner_techs = len(((civ.get("tech") or {}).get("techsResearched")) or [])
         for city in civ.get("cities") or []:
             loc = city.get("location") or {}
-            constructions = city.get("cityConstructions") or {}
-            built = constructions.get("builtBuildings") or []
+            cc = city.get("cityConstructions") or {}
+            built = cc.get("builtBuildings") or []
+            queue = cc.get("constructionQueue") or []
+            current = cc.get("currentConstructionFromQueue") or (queue[0] if queue else None)
+            in_progress = cc.get("inProgressConstructions") or {}
+            pop = city.get("population") or {}
             is_capital = "Palace" in built or bool(city.get("isOriginalCapital"))
             cities.append({
                 "x": loc.get("x", 0),
@@ -150,6 +164,14 @@ def _extract_cities(save: dict) -> list[dict]:
                 "name": city.get("name") or "",
                 "owner": owner,
                 "isCapital": is_capital,
+                "population": pop.get("population", 0),
+                "foodStored": pop.get("foodStored", 0),
+                "construction": ({"name": current, "workDone": in_progress.get(current, 0)}
+                                 if current else None),
+                "religion": _majority_religion(city),
+                "health": city.get("health", 0),
+                "buildings": list(built),
+                "ownerTechs": owner_techs,
             })
     return cities
 
