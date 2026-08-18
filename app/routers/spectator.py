@@ -177,6 +177,14 @@ def _extract_cities(save: dict) -> list[dict]:
                 "health": city.get("health", 0),
                 "buildings": list(built),
                 "ownerTechs": owner_techs,
+                # For the per-turn city stats (production/food -> construction &
+                # growth turns, starvation): tiles this city works + its specialists.
+                "workedTiles": [
+                    {"x": p.get("x", 0), "y": p.get("y", 0)}
+                    for p in (city.get("workedTiles") or [])
+                    if isinstance(p, dict)
+                ],
+                "specialists": {k: int(v) for k, v in (pop.get("specialistAllocations") or {}).items()},
             })
     return cities
 
