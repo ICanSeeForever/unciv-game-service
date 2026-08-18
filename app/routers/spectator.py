@@ -24,7 +24,10 @@ def _tile_owner_by_position(save: dict) -> dict[tuple, str]:
         for city in civ.get("cities") or []:
             for pos in city.get("tiles") or []:
                 if isinstance(pos, dict):
-                    owners[(pos.get("x"), pos.get("y"))] = civ_name
+                    # libGDX Json omits a Vector2 component when it's 0, so a
+                    # missing x/y means 0 — must match the tileList default below,
+                    # otherwise every owned tile on the x=0 / y=0 axes is lost.
+                    owners[(pos.get("x", 0), pos.get("y", 0))] = civ_name
     return owners
 
 
