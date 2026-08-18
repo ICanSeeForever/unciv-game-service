@@ -143,6 +143,7 @@ async def spectator_state(game_id: str):
             "baseTerrain": tile.get("baseTerrain") or "",
             "terrainFeatures": list(tile.get("terrainFeatures") or []),
             "resource": tile.get("resource"),
+            "resourceAmount": tile.get("resourceAmount") or 0,
             "improvement": tile.get("improvement"),
             "roadStatus": tile.get("roadStatus"),
             "owningCiv": owners.get((x, y)),
