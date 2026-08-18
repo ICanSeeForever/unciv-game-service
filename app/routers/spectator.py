@@ -68,8 +68,41 @@ def _unit_trail(unit: dict, cur_x: int, cur_y: int) -> list[dict]:
     return points
 
 
+def _unit_record(unit: dict, x: int, y: int, *, military: bool, air: bool) -> dict:
+    """Normalize one unit for the viewer (position, move arrow, attack targets)."""
+    health = unit.get("health")
+    # A pending multi-turn move is stored as action "moveTo <x>,<y>" — Unciv draws
+    # a white "UnitMoving" arrow to that destination (isMoving()).
+    move_to = None
+    action = str(unit.get("action") or "")
+    if action.startswith("moveTo "):
+        try:
+            mx, my = action.split(" ", 1)[1].split(",")
+            move_to = {"x": int(mx), "y": int(my)}
+        except (ValueError, IndexError):
+            move_to = None
+    # Tiles this unit attacked this turn (attacksSinceTurnStart) → red attack arrows.
+    attacks = [
+        {"x": a.get("x", 0), "y": a.get("y", 0)}
+        for a in (unit.get("attacksSinceTurnStart") or [])
+        if isinstance(a, dict)
+    ]
+    return {
+        "x": x,
+        "y": y,
+        "name": unit.get("name") or "",
+        "owner": unit.get("owner") or unit.get("originalOwner"),
+        "military": military,
+        "air": air,
+        "health": int(health) if health is not None else 100,
+        "trail": _unit_trail(unit, x, y),
+        "moveTo": move_to,
+        "attacks": attacks,
+    }
+
+
 def _extract_units(save: dict) -> list[dict]:
-    """Units on the map, from each tile's civilian/military unit slots."""
+    """Units on the map, from each tile's civilian/military/air unit slots."""
     units: list[dict] = []
     for tile in (save.get("tileMap") or {}).get("tileList") or []:
         if not isinstance(tile, dict):
@@ -78,30 +111,27 @@ def _extract_units(save: dict) -> list[dict]:
         x, y = pos.get("x", 0), pos.get("y", 0)
         for key in ("civilianUnit", "militaryUnit"):
             unit = tile.get(key)
-            if not isinstance(unit, dict):
-                continue
-            health = unit.get("health")
-            # A pending multi-turn move is stored as action "moveTo <x>,<y>" —
-            # Unciv draws a white "UnitMoving" arrow to that destination.
-            move_to = None
-            action = str(unit.get("action") or "")
-            if action.startswith("moveTo "):
-                try:
-                    mx, my = action.split(" ", 1)[1].split(",")
-                    move_to = {"x": int(mx), "y": int(my)}
-                except (ValueError, IndexError):
-                    move_to = None
-            units.append({
-                "x": x,
-                "y": y,
-                "name": unit.get("name") or "",
-                "owner": unit.get("owner") or unit.get("originalOwner"),
-                "military": key == "militaryUnit",
-                "health": int(health) if health is not None else 100,
-                "trail": _unit_trail(unit, x, y),
-                "moveTo": move_to,
-            })
+            if isinstance(unit, dict):
+                units.append(_unit_record(unit, x, y, military=key == "militaryUnit", air=False))
+        # Air units are a LIST on the tile (a city can hold several).
+        for unit in tile.get("airUnits") or []:
+            if isinstance(unit, dict):
+                units.append(_unit_record(unit, x, y, military=True, air=True))
     return units
+
+
+def _civ_attacks(save: dict) -> list[dict]:
+    """Civ-level attack memories (source -> target) for red attack arrows."""
+    out: list[dict] = []
+    for civ in save.get("civilizations") or []:
+        for a in civ.get("attacksSinceTurnStart") or []:
+            src = (a or {}).get("source") or {}
+            tgt = (a or {}).get("target") or {}
+            out.append({
+                "fromX": src.get("x", 0), "fromY": src.get("y", 0),
+                "toX": tgt.get("x", 0), "toY": tgt.get("y", 0),
+            })
+    return out
 
 
 def _extract_cities(save: dict) -> list[dict]:
@@ -185,4 +215,5 @@ async def spectator_state(game_id: str):
         "tiles": tiles,
         "units": _extract_units(save),
         "cities": _extract_cities(save),
+        "attacks": _civ_attacks(save),
     }
