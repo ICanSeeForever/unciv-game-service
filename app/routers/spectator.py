@@ -81,6 +81,16 @@ def _extract_units(save: dict) -> list[dict]:
             if not isinstance(unit, dict):
                 continue
             health = unit.get("health")
+            # A pending multi-turn move is stored as action "moveTo <x>,<y>" —
+            # Unciv draws a white "UnitMoving" arrow to that destination.
+            move_to = None
+            action = str(unit.get("action") or "")
+            if action.startswith("moveTo "):
+                try:
+                    mx, my = action.split(" ", 1)[1].split(",")
+                    move_to = {"x": int(mx), "y": int(my)}
+                except (ValueError, IndexError):
+                    move_to = None
             units.append({
                 "x": x,
                 "y": y,
@@ -89,6 +99,7 @@ def _extract_units(save: dict) -> list[dict]:
                 "military": key == "militaryUnit",
                 "health": int(health) if health is not None else 100,
                 "trail": _unit_trail(unit, x, y),
+                "moveTo": move_to,
             })
     return units
 
