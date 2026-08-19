@@ -15,6 +15,7 @@ from fastapi import APIRouter, HTTPException, Query
 from app.config import settings
 from app.game.fetcher import get_save_dict
 from app.game.parser import decode_save
+from app.game.stats import compute_income
 
 router = APIRouter(prefix="/games", tags=["spectator"])
 
@@ -424,6 +425,19 @@ def _build_state(save: dict, game_id: str) -> dict:
     game_params = save.get("gameParameters") or {}
     mods = [m for m in (game_params.get("mods") or []) if m]
 
+    cities = _extract_cities(save)
+    civ_stats = _civ_economy(save)
+    religions = _religions(save)
+    # Per-turn income / net happiness (Unciv top-bar figures) computed on the
+    # backend from the full save; merged into each civStats entry as `income`.
+    try:
+        income = compute_income(cities, tiles, civ_stats, religions)
+        for name, inc in income.items():
+            if name in civ_stats:
+                civ_stats[name]["income"] = inc
+    except Exception:  # never let the stats engine break the state response
+        pass
+
     return {
         "gameId": game_id,
         "turn": int(save.get("turns") or 0),
@@ -434,11 +448,11 @@ def _build_state(save: dict, game_id: str) -> dict:
         "mods": mods,
         "tiles": tiles,
         "units": _extract_units(save),
-        "cities": _extract_cities(save),
+        "cities": cities,
         "attacks": _civ_attacks(save),
         "civs": _player_civs(save),
-        "civStats": _civ_economy(save),
-        "religions": _religions(save),
+        "civStats": civ_stats,
+        "religions": religions,
         "currentPlayer": save.get("currentPlayer"),
     }
 
