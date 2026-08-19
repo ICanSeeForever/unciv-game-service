@@ -299,6 +299,8 @@ def _extract_cities(save: dict) -> list[dict]:
                     if isinstance(p, dict)
                 ],
                 "specialists": {k: int(v) for k, v in (pop.get("specialistAllocations") or {}).items()},
+                # Puppeted cities don't benefit from social policies (stats engine).
+                "isPuppet": bool(city.get("isPuppet")),
             })
     return cities
 
@@ -437,6 +439,7 @@ def _build_state(save: dict, game_id: str) -> dict:
         "civs": _player_civs(save),
         "civStats": _civ_economy(save),
         "religions": _religions(save),
+        "currentPlayer": save.get("currentPlayer"),
     }
 
 
