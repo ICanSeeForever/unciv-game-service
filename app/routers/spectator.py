@@ -303,6 +303,43 @@ def _extract_cities(save: dict) -> list[dict]:
     return cities
 
 
+def _civ_economy(save: dict) -> dict:
+    """Per-civ economy shown in the viewer's top resource bar (Unciv EmpireOverview
+    / the world-screen top stats). Only the save-backed scalars are extracted here;
+    per-turn income (gold/science/culture/faith, net happiness) is computed on the
+    frontend stats engine, and the tech/policy/religion lists drive the click-through
+    windows. Keyed by civName; the frontend shows the entry for the selected nation
+    (and all-zero for the spectator, i.e. no nation selected)."""
+    out: dict[str, dict] = {}
+    for civ in save.get("civilizations") or []:
+        name = civ.get("civName")
+        if not name or name in ("Spectator", "Barbarians"):
+            continue
+        tech = civ.get("tech") or {}
+        policies = civ.get("policies") or {}
+        religion = civ.get("religionManager") or {}
+        golden = civ.get("goldenAges") or {}
+        out[name] = {
+            # Exact, straight from the save.
+            "gold": int(civ.get("gold") or 0),
+            "storedCulture": int(policies.get("storedCulture") or 0),
+            "storedFaith": int(religion.get("storedFaith") or 0),
+            "storedHappiness": int(golden.get("storedHappiness") or 0),
+            "numberOfGoldenAges": int(golden.get("numberOfGoldenAges") or 0),
+            "techsResearched": list(tech.get("techsResearched") or []),
+            # {techName: accumulatedScience} for the tech currently being researched.
+            "techsInProgress": dict(tech.get("techsInProgress") or {}),
+            "currentTech": (tech.get("techsToResearch") or [None])[0],
+            # Recent science per turn (Unciv keeps the last 8) — a good proxy for
+            # the "+science" figure until the full stats engine lands.
+            "scienceOfLast8Turns": list(tech.get("scienceOfLast8Turns") or []),
+            "adoptedPolicies": list(policies.get("adoptedPolicies") or []),
+            "numberOfAdoptedPolicies": int(policies.get("numberOfAdoptedPolicies") or 0),
+            "religionState": religion.get("religionState"),
+        }
+    return out
+
+
 @router.get(
     "/{game_id}/spectator-state",
     summary="Normalized spectator state for the web viewer (tiles + hex coords + mods)",
@@ -373,6 +410,7 @@ def _build_state(save: dict, game_id: str) -> dict:
         "cities": _extract_cities(save),
         "attacks": _civ_attacks(save),
         "civs": _player_civs(save),
+        "civStats": _civ_economy(save),
     }
 
 
