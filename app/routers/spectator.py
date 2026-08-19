@@ -14,8 +14,9 @@ from fastapi import APIRouter, HTTPException, Query
 
 from app.config import settings
 from app.game.fetcher import get_save_dict
-from app.game.parser import decode_save
+from app.game.parser import decode_save, encode_save
 from app.game.stats import compute_income
+from app.game.native_stats import compute_income_native
 
 router = APIRouter(prefix="/games", tags=["spectator"])
 
@@ -428,13 +429,26 @@ def _build_state(save: dict, game_id: str) -> dict:
     cities = _extract_cities(save)
     civ_stats = _civ_economy(save)
     religions = _religions(save)
-    # Per-turn income / net happiness (Unciv top-bar figures) computed on the
-    # backend from the full save; merged into each civStats entry as `income`.
+    # Per-turn income / net happiness (Unciv top-bar figures). Prefer the native
+    # Unciv engine (exact, runs the real game code headless); fall back to the
+    # pure-Python approximation if the native engine is unavailable.
     try:
-        income = compute_income(cities, tiles, civ_stats, religions)
-        for name, inc in income.items():
+        income = None
+        try:
+            income = compute_income_native(encode_save(save))
+        except Exception:
+            income = None
+        if not income:
+            income = compute_income(cities, tiles, civ_stats, religions)
+        for name, inc in (income or {}).items():
             if name in civ_stats:
-                civ_stats[name]["income"] = inc
+                civ_stats[name]["income"] = {
+                    "gold": int(inc.get("gold", 0)),
+                    "science": int(inc.get("science", 0)),
+                    "culture": int(inc.get("culture", 0)),
+                    "faith": int(inc.get("faith", 0)),
+                    "happiness": int(inc.get("happiness", 0)),
+                }
     except Exception:  # never let the stats engine break the state response
         pass
 
