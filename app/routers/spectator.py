@@ -303,6 +303,31 @@ def _extract_cities(save: dict) -> list[dict]:
     return cities
 
 
+def _religions(save: dict) -> list[dict]:
+    """Founded religions + pantheons for the viewer's religion overview (Unciv
+    ReligionOverviewTab). The frontend filters founded ones and computes follower
+    counts from cities; belief effects come from the mod's Beliefs.json."""
+    holy: dict[str, str] = {}
+    for civ in save.get("civilizations") or []:
+        for city in civ.get("cities") or []:
+            rc = city.get("religion") or {}
+            name = rc.get("religionThisIsTheHolyCityOf")
+            if name:
+                holy[name] = city.get("name")
+    out: list[dict] = []
+    for key, r in (save.get("religions") or {}).items():
+        name = r.get("name") or key
+        out.append({
+            "name": name,
+            "displayName": r.get("displayName") or name,
+            "founder": r.get("foundingCivName"),
+            "holyCity": holy.get(name),
+            "founderBeliefs": list(r.get("founderBeliefs") or []),
+            "followerBeliefs": list(r.get("followerBeliefs") or []),
+        })
+    return out
+
+
 def _civ_economy(save: dict) -> dict:
     """Per-civ economy shown in the viewer's top resource bar (Unciv EmpireOverview
     / the world-screen top stats). Only the save-backed scalars are extracted here;
@@ -411,6 +436,7 @@ def _build_state(save: dict, game_id: str) -> dict:
         "attacks": _civ_attacks(save),
         "civs": _player_civs(save),
         "civStats": _civ_economy(save),
+        "religions": _religions(save),
     }
 
 
