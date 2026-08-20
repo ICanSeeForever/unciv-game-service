@@ -48,6 +48,10 @@ _ready: bool | None = None  # None = not yet attempted
 _cache: dict[str, dict] = {}
 _CACHE_MAX = 512
 
+# Sentinel: the engine responded but can't compute this save (bad/incompatible). The
+# caller should NOT fall back to the one-shot (it would fail the same way, slowly).
+_ENGINE_ERROR = object()
+
 # Warm-daemon state, guarded by _daemon_lock (also serializes stdin/stdout I/O).
 # A dedicated reader thread drains the daemon's stdout into _daemon_q: mixing
 # select() with a buffered pipe is unreliable (readline() pulls a line into Python's
@@ -194,10 +198,13 @@ def _compute_via_daemon(save_file: Path) -> dict | None:
                     return json.loads(line[len("STATS_JSON="):])
                 except Exception:
                     logger.warning("native stats: bad STATS_JSON from daemon")
-                    return None
+                    return _ENGINE_ERROR
             if line.startswith("STATS_ERROR="):
+                # The engine ran but can't compute this save (e.g. an old, version-
+                # incompatible save). The one-shot would hit the same error slowly, so
+                # signal "engine responded, don't retry" instead of returning None.
                 logger.warning("native stats: daemon reported %s", line)
-                return None
+                return _ENGINE_ERROR
             # else: unrelated log line — keep reading
     return None
 
@@ -253,6 +260,8 @@ def compute_income_native(save_string: str) -> dict | None:
         save_file.write_text(save_string, encoding="utf-8")
         with _daemon_lock:
             result = _compute_via_daemon(save_file)
+        if result is _ENGINE_ERROR:
+            return None  # engine responded but can't compute — don't retry via one-shot
         if result is None:
             result = _compute_via_oneshot(save_file)
         if result is None:

@@ -249,12 +249,52 @@ def _player_civs(save: dict) -> list[str]:
     return out
 
 
+def _unbox_num(v) -> float:
+    """Old libGDX JSON boxes numbers as {"class": ..., "value": N}; new saves store a
+    plain int. Return the numeric value from either form (0 if not numeric)."""
+    if isinstance(v, dict):
+        v = v.get("value", 0)
+    return v if isinstance(v, (int, float)) else 0
+
+
+# Java primitive/boxed types libGDX writes as {"class": <type>, "value": X} in older
+# saves (when a collection's element type is ambiguous). We normalise these to plain X.
+_JAVA_BOX_TYPES = frozenset({
+    "java.lang.Integer", "java.lang.Long", "java.lang.Short", "java.lang.Byte",
+    "java.lang.Float", "java.lang.Double", "java.lang.Boolean", "java.lang.String",
+    "int", "long", "short", "byte", "float", "double", "boolean",
+})
+
+
+def _unbox_save(o) -> None:
+    """Recursively replace boxed primitives {"class": <java-type>, "value": X} with X,
+    in place, so the pure-Python denormalizers (which expect plain ints) handle old
+    saves. The native engine still gets the original (boxed) save — it reads its own
+    format and migrates it itself."""
+    if isinstance(o, dict):
+        for k, v in o.items():
+            if (isinstance(v, dict) and len(v) == 2
+                    and v.get("class") in _JAVA_BOX_TYPES and "value" in v):
+                o[k] = v["value"]
+            else:
+                _unbox_save(v)
+    elif isinstance(o, list):
+        for i, v in enumerate(o):
+            if (isinstance(v, dict) and len(v) == 2
+                    and v.get("class") in _JAVA_BOX_TYPES and "value" in v):
+                o[i] = v["value"]
+            else:
+                _unbox_save(v)
+
+
 def _majority_religion(city: dict) -> str | None:
     """City's majority religion = highest religious pressure (Unciv getMajorityReligion)."""
     pressures = ((city.get("religion") or {}).get("pressures")) or {}
-    if not pressures:
+    # Old libGDX saves box numbers as {"class": ..., "value": N} instead of a plain int.
+    nums = {k: _unbox_num(v) for k, v in pressures.items()}
+    if not nums:
         return None
-    name, value = max(pressures.items(), key=lambda kv: kv[1])
+    name, value = max(nums.items(), key=lambda kv: kv[1])
     return name if value > 0 else None
 
 
@@ -389,6 +429,10 @@ async def spectator_state(game_id: str):
 
 def _build_state(save: dict, game_id: str) -> dict:
     """Denormalize a decoded save into the viewer's spectator-state shape."""
+    # Encode the ORIGINAL save for the native engine (it reads/migrates its own boxed
+    # format), then normalise boxed primitives in place for the Python denormalizers.
+    daemon_save_str = encode_save(save)
+    _unbox_save(save)
     tile_map = save.get("tileMap") or {}
     map_params = tile_map.get("mapParameters") or {}
     map_size = map_params.get("mapSize") or {}
@@ -434,7 +478,7 @@ def _build_state(save: dict, game_id: str) -> dict:
     # If the engine is unavailable these fields are simply absent (no approximation).
     try:
         try:
-            income = compute_income_native(encode_save(save))
+            income = compute_income_native(daemon_save_str)
         except Exception:
             income = None
         # {(owner, "x,y"): {growth, starve, production, strength}} from the native
