@@ -152,6 +152,32 @@ public class StatDaemon {
                 // Leave this civ out; the caller falls back for it.
             }
         }
+
+        // Per-tile real yield for owned tiles: the exact stats the owning city gets
+        // from the tile (base + city/policy/religion/wonder bonuses), keyed by "x,y".
+        // Neutral tiles are omitted (the frontend shows their base yield).
+        if (!first) sb.append(",");
+        sb.append("\"__tileYields__\":{");
+        boolean tyf = true;
+        for (com.unciv.logic.map.tile.Tile t : gi.getTileMap().getTileList()) {
+            City oc = t.getOwningCity();
+            if (oc == null) continue;
+            Stats s;
+            try { s = t.getStats().getTileStats(oc, oc.getCiv()); }
+            catch (Throwable e) { continue; }
+            if (!tyf) sb.append(",");
+            tyf = false;
+            sb.append("\"").append(t.getPosition().getX()).append(",")
+              .append(t.getPosition().getY()).append("\":{")
+              .append("\"food\":").append(Math.round(s.getFood())).append(",")
+              .append("\"production\":").append(Math.round(s.getProduction())).append(",")
+              .append("\"gold\":").append(Math.round(s.getGold())).append(",")
+              .append("\"science\":").append(Math.round(s.getScience())).append(",")
+              .append("\"culture\":").append(Math.round(s.getCulture())).append(",")
+              .append("\"faith\":").append(Math.round(s.getFaith())).append("}");
+        }
+        sb.append("}");
+
         sb.append("}");
         return sb.toString();
     }
