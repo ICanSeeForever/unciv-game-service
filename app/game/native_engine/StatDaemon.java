@@ -1,9 +1,13 @@
 import com.unciv.UncivGame;
 import com.unciv.models.metadata.GameSettings;
 import com.unciv.models.ruleset.RulesetCache;
+import com.unciv.models.ruleset.tile.ResourceType;
+import com.unciv.models.ruleset.tile.TileResource;
 import com.unciv.logic.files.UncivFiles;
 import com.unciv.logic.GameInfo;
 import com.unciv.logic.civilization.Civilization;
+import com.unciv.logic.city.City;
+import com.unciv.logic.battle.CityCombatant;
 import com.unciv.models.stats.Stats;
 import java.io.BufferedReader;
 import java.io.FileDescriptor;
@@ -12,26 +16,28 @@ import java.io.InputStreamReader;
 import java.io.PrintStream;
 import java.nio.file.*;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
- * Warm headless stat engine. Same math as StatDumper, but the ruleset + JVM stay
- * loaded across many saves so JIT can warm up: a single cold call is ~5s, every
- * subsequent one ~1s (vs. ~6s per fresh StatDumper process).
+ * Warm headless stat engine. Loads the ruleset + JVM once and stays resident so JIT
+ * warms up (cold call ~5s, warm ~1.6s). For each save path on stdin it prints one
+ * "STATS_JSON=" line with, per civ: per-turn income + happiness (the world-screen top
+ * bar), turns to next social policy, net strategic-resource amounts, and per-city
+ * growth/starvation/production turns + defensive strength — all straight from the
+ * native engine, so the numbers match the game exactly.
  *
- * Protocol (line-based over stdin/stdout, driven by native_stats.py):
- *   - On startup, after the ruleset loads, prints "DAEMON_READY".
- *   - For each line of stdin = absolute path to a save file, prints exactly one line:
- *       "STATS_JSON={...}"   on success, or
- *       "STATS_ERROR=<msg>"  if that one save fails (the daemon keeps running).
- *   - A blank line or "__QUIT__" shuts the daemon down.
- * A bad save never kills the process, so game-service can rely on the warm engine.
+ * Protocol (line-based over a raw fd-1 stream so Unciv's buffered System.out wrapper
+ * can't swallow it): "DAEMON_READY" once ready; then "STATS_JSON={...}" or
+ * "STATS_ERROR=<msg>" per input line; a blank line / "__QUIT__" shuts it down.
  */
 public class StatDaemon {
+    private static List<String> strategicResources = null;  // ruleset is loaded once
+
     public static void main(String[] args) throws Exception {
-        // Protocol channel: a raw autoflush stream straight onto fd 1. Unciv replaces
-        // System.out with its own *buffered* stream (adds timestamps), whose flush()
-        // doesn't reliably reach fd 1 while the JVM stays alive — so the parent would
-        // never see our lines. Writing to FileDescriptor.out sidesteps that wrapper.
+        // Protocol channel: raw autoflush stream on fd 1 (Unciv replaces System.out
+        // with a buffered wrapper whose flush() doesn't reliably reach fd 1 while the
+        // JVM stays alive, so plain println would never reach the parent).
         PrintStream out = new PrintStream(new FileOutputStream(FileDescriptor.out), true, "UTF-8");
 
         UncivGame game = new UncivGame(true);
@@ -57,7 +63,23 @@ public class StatDaemon {
         System.exit(0);
     }
 
+    private static List<String> getStrategicResources(GameInfo gi) {
+        if (strategicResources == null) {
+            List<String> names = new ArrayList<>();
+            for (TileResource r : gi.getRuleset().getTileResources().values())
+                // Real map resources only: RekMOD also has Strategic-typed bookkeeping
+                // "resources" (Policies, Factories, Ideology, Great Works, Trade Route)
+                // with no terrain — those aren't the Horses/Iron/... bar the UI wants.
+                if (r.getResourceType() == ResourceType.Strategic
+                        && !r.getTerrainsCanBeFoundOn().isEmpty())
+                    names.add(r.getName());
+            strategicResources = names;
+        }
+        return strategicResources;
+    }
+
     private static String dump(GameInfo gi) {
+        List<String> strategic = getStrategicResources(gi);
         StringBuilder sb = new StringBuilder("STATS_JSON={");
         boolean first = true;
         for (Civilization civ : gi.getCivilizations()) {
@@ -66,6 +88,7 @@ public class StatDaemon {
                 if (civ.isBarbarian() || civ.isSpectator()) continue;
                 civ.updateStatsForNextTurn();
                 Stats s = civ.getStats().getStatsForNextTurn();
+
                 if (!first) sb.append(",");
                 first = false;
                 sb.append("\"").append(esc(name)).append("\":{")
@@ -73,14 +96,65 @@ public class StatDaemon {
                   .append("\"science\":").append(Math.round(s.getScience())).append(",")
                   .append("\"culture\":").append(Math.round(s.getCulture())).append(",")
                   .append("\"faith\":").append(Math.round(s.getFaith())).append(",")
-                  .append("\"happiness\":").append(civ.getHappiness())
-                  .append("}");
+                  .append("\"happiness\":").append(civ.getHappiness()).append(",")
+                  .append("\"policyTurns\":").append(policyTurns(civ, s.getCulture())).append(",");
+
+                // Net available strategic resources (produced - consumed + traded).
+                sb.append("\"resources\":{");
+                boolean rf = true;
+                for (String r : strategic) {
+                    if (!rf) sb.append(",");
+                    rf = false;
+                    sb.append("\"").append(esc(r)).append("\":").append(civ.getResourceAmount(r));
+                }
+                sb.append("},");
+
+                // Per-city plate numbers, keyed by "x,y" (matches the save's location).
+                sb.append("\"cities\":{");
+                boolean cf = true;
+                for (City c : civ.getCities()) {
+                    if (!cf) sb.append(",");
+                    cf = false;
+                    appendCity(sb, c);
+                }
+                sb.append("}}");
             } catch (Throwable t) {
-                // Skip civs the engine can't compute (leave them to the caller's fallback).
+                // Leave this civ out; the caller falls back for it.
             }
         }
         sb.append("}");
         return sb.toString();
+    }
+
+    private static void appendCity(StringBuilder sb, City c) {
+        int x = Math.round(c.getLocation().getX());
+        int y = Math.round(c.getLocation().getY());
+        Integer grow = c.getPopulation().getNumTurnsToNewPopulation();
+        Integer starve = c.getPopulation().getNumTurnsToStarvation();
+        int production = -1;
+        String cur = c.getCityConstructions().currentConstructionName();
+        if (cur != null && !cur.isEmpty()) {
+            try { production = c.getCityConstructions().turnsToConstruction(cur, true); }
+            catch (Throwable t) { production = -1; }
+        }
+        int strength;
+        try { strength = new CityCombatant(c).getDefendingStrength(null); }
+        catch (Throwable t) { strength = -1; }
+        sb.append("\"").append(x).append(",").append(y).append("\":{")
+          .append("\"growth\":").append(grow == null ? -1 : grow).append(",")
+          .append("\"starve\":").append(starve == null ? -1 : starve).append(",")
+          .append("\"production\":").append(production).append(",")
+          .append("\"strength\":").append(strength)
+          .append("}");
+    }
+
+    /** Turns until the next social policy: -1 = ready now ("!"), -2 = no culture income. */
+    private static int policyTurns(Civilization civ, float culturePerTurn) {
+        int stored = civ.getPolicies().getStoredCulture();
+        int needed = civ.getPolicies().getCultureNeededForNextPolicy();
+        if (stored >= needed) return -1;
+        if (culturePerTurn <= 0) return -2;
+        return (int) Math.ceil((needed - stored) / culturePerTurn);
     }
 
     private static String esc(String s) {

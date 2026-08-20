@@ -440,6 +440,9 @@ def _build_state(save: dict, game_id: str) -> dict:
             income = None
         if not income:
             income = compute_income(cities, tiles, civ_stats, religions)
+        # {(owner, "x,y"): {growth, starve, production, strength}} from the native
+        # engine, to overlay exact per-city plate numbers onto the city list below.
+        city_stats: dict[tuple[str, str], dict] = {}
         for name, inc in (income or {}).items():
             if name in civ_stats:
                 civ_stats[name]["income"] = {
@@ -449,6 +452,23 @@ def _build_state(save: dict, game_id: str) -> dict:
                     "faith": int(inc.get("faith", 0)),
                     "happiness": int(inc.get("happiness", 0)),
                 }
+                # Native engine also returns exact policy timing + strategic resources.
+                if "policyTurns" in inc:
+                    civ_stats[name]["policyTurns"] = int(inc["policyTurns"])
+                if "resources" in inc:
+                    civ_stats[name]["resources"] = {
+                        k: int(v) for k, v in (inc.get("resources") or {}).items()
+                    }
+            for xy, cs in (inc.get("cities") or {}).items():
+                city_stats[(name, xy)] = cs
+        # Overlay exact growth/starvation/production/strength onto each city plate.
+        for city in cities:
+            cs = city_stats.get((city.get("owner"), f"{city.get('x')},{city.get('y')}"))
+            if cs:
+                city["growthTurns"] = int(cs.get("growth", -1))
+                city["starvationTurns"] = int(cs.get("starve", -1))
+                city["productionTurns"] = int(cs.get("production", -1))
+                city["strength"] = int(cs.get("strength", -1))
     except Exception:  # never let the stats engine break the state response
         pass
 
