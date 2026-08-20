@@ -213,6 +213,22 @@ def _compute_via_oneshot(save_file: Path) -> dict | None:
     return None
 
 
+def prewarm() -> None:
+    """Compile the wrappers and boot the warm daemon in the background at startup, so
+    the first spectator request doesn't pay the ~7s cold-boot cost. Non-blocking: the
+    app starts immediately; if prep fails, compute_income_native falls back as usual."""
+    def _run() -> None:
+        try:
+            if not _prepare():
+                return
+            with _daemon_lock:
+                if not _daemon_alive():
+                    _start_daemon()
+        except Exception:
+            logger.exception("native stats: prewarm failed")
+    threading.Thread(target=_run, name="native-stats-prewarm", daemon=True).start()
+
+
 def compute_income_native(save_string: str) -> dict | None:
     """Return {civName: {gold, science, culture, faith, happiness}} via the native
     engine, or None if unavailable/failed. `save_string` is the raw Unciv save

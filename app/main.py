@@ -9,6 +9,7 @@ from app.routers.spectator import router as spectator_router
 from app.routers.spectator import browser as spectator_browser_router
 from app.routers.tasks import router as tasks_router
 from app.services.task_manager import start_cleanup_task
+from app.game.native_stats import prewarm as prewarm_native_stats
 
 DESCRIPTION = """
 **unciv-game-service** — REST API for managing Unciv multiplayer games.
@@ -46,6 +47,7 @@ TAGS = [
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     start_cleanup_task()
+    prewarm_native_stats()  # boot the warm Unciv stat daemon in the background
     yield
 
 
