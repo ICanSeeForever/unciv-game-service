@@ -279,6 +279,43 @@ def _player_id_to_name() -> dict[str, str]:
     return _cards_cache["map"]
 
 
+# core-service session index (game name -> status), mounted read-only. Used to keep
+# unfinished games out of the spectator: watching a live game would leak fog-of-war
+# to its own players. Cached by file mtime.
+_CORE_SESSIONS_PATH = Path("/data/core/sessions_index.json")
+_sessions_cache: dict = {"mtime": -1.0, "map": {}}
+_ENDED_STATUSES = {"ended", "finished"}
+
+
+def _session_statuses() -> dict[str, str]:
+    """{game name: status} from core-service's session index, or {} if unavailable."""
+    try:
+        mtime = _CORE_SESSIONS_PATH.stat().st_mtime
+    except OSError:
+        return {}
+    if mtime != _sessions_cache["mtime"]:
+        out: dict[str, str] = {}
+        try:
+            data = json.loads(_CORE_SESSIONS_PATH.read_text("utf-8"))
+            for name, info in (data or {}).items():
+                st = (info or {}).get("status")
+                if st is not None:
+                    out[str(name)] = str(st).strip().lower()
+        except Exception:
+            out = {}
+        _sessions_cache["mtime"] = mtime
+        _sessions_cache["map"] = out
+    return _sessions_cache["map"]
+
+
+def _is_spectatable(name: str) -> bool:
+    """A game may be spectated only when it is finished. Games with a known, non-ended
+    status (active/draft) are hidden; folders with no index entry are treated as legacy
+    archives and kept."""
+    st = _session_statuses().get(name)
+    return st is None or st in _ENDED_STATUSES
+
+
 def _unbox_num(v) -> float:
     """Old libGDX JSON boxes numbers as {"class": ..., "value": N}; new saves store a
     plain int. Return the numeric value from either form (0 if not numeric)."""
@@ -625,7 +662,7 @@ async def list_games():
         return {"games": []}
     names = sorted(
         (d.name for d in base.iterdir()
-         if d.is_dir() and d.name not in _RESERVED_FOLDERS),
+         if d.is_dir() and d.name not in _RESERVED_FOLDERS and _is_spectatable(d.name)),
         key=_natural_key,
         reverse=True,  # newest/highest first (game29 … game1)
     )
@@ -634,6 +671,8 @@ async def list_games():
 
 @browser.get("/games/{name}", summary="Turn list + live-save availability for a game")
 async def game_detail(name: str):
+    if not _is_spectatable(name):
+        raise HTTPException(status_code=403, detail="Game is not finished")
     folder = _backup_folder(name)
     uuid = _resolve_uuid(folder)
     return {
@@ -649,6 +688,8 @@ async def game_state(
     name: str,
     turn: str = Query(..., description='Turn number, or "current" for the live save'),
 ):
+    if not _is_spectatable(name):
+        raise HTTPException(status_code=403, detail="Game is not finished")
     folder = _backup_folder(name)
     if turn == "current":
         uuid = _resolve_uuid(folder)
