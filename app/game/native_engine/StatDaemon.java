@@ -130,7 +130,24 @@ public class StatDaemon {
                     sb.append("\"").append(esc(tech)).append("\":")
                       .append(parseTurns(civ.getTech().turnsToTech(tech)));
                 }
-                sb.append("}}");
+                sb.append("},");
+
+                // Owner era (drives era-variant improvement/city/embark textures) and
+                // the positions of this civ's embarked units (land units on water).
+                sb.append("\"era\":\"").append(esc(civ.getEra().getName())).append("\",");
+                sb.append("\"embarked\":[");
+                boolean ef = true;
+                java.util.Iterator<com.unciv.logic.map.mapunit.MapUnit> uit =
+                    civ.getUnits().getCivUnits().iterator();
+                while (uit.hasNext()) {
+                    com.unciv.logic.map.mapunit.MapUnit u = uit.next();
+                    if (!u.isEmbarked()) continue;
+                    if (!ef) sb.append(",");
+                    ef = false;
+                    sb.append("\"").append(u.getTile().getPosition().getX())
+                      .append(",").append(u.getTile().getPosition().getY()).append("\"");
+                }
+                sb.append("]}");
             } catch (Throwable t) {
                 // Leave this civ out; the caller falls back for it.
             }

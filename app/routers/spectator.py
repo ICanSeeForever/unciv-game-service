@@ -426,6 +426,7 @@ def _build_state(save: dict, game_id: str) -> dict:
     mods = [m for m in (game_params.get("mods") or []) if m]
 
     cities = _extract_cities(save)
+    units = _extract_units(save)
     civ_stats = _civ_economy(save)
     religions = _religions(save)
     # Per-turn income / net happiness + policy timing, resources and per-city plate
@@ -439,7 +440,11 @@ def _build_state(save: dict, game_id: str) -> dict:
         # {(owner, "x,y"): {growth, starve, production, strength}} from the native
         # engine, to overlay exact per-city plate numbers onto the city list below.
         city_stats: dict[tuple[str, str], dict] = {}
+        # {(owner, "x,y")} of embarked units (land units on water) — drives boat sprites.
+        embarked: set[tuple[str, str]] = set()
         for name, inc in (income or {}).items():
+            for xy in inc.get("embarked") or []:
+                embarked.add((name, xy))
             if name in civ_stats:
                 civ_stats[name]["income"] = {
                     "gold": int(inc.get("gold", 0)),
@@ -460,6 +465,9 @@ def _build_state(save: dict, game_id: str) -> dict:
                     civ_stats[name]["techTurns"] = {
                         k: int(v) for k, v in (inc.get("techTurns") or {}).items()
                     }
+                # Owner era — drives era-variant improvement/city/embark textures.
+                if inc.get("era"):
+                    civ_stats[name]["era"] = str(inc["era"])
             for xy, cs in (inc.get("cities") or {}).items():
                 city_stats[(name, xy)] = cs
         # Overlay exact growth/starvation/production/strength onto each city plate.
@@ -470,6 +478,9 @@ def _build_state(save: dict, game_id: str) -> dict:
                 city["starvationTurns"] = int(cs.get("starve", -1))
                 city["productionTurns"] = int(cs.get("production", -1))
                 city["strength"] = int(cs.get("strength", -1))
+        for unit in units:
+            if (unit.get("owner"), f"{unit.get('x')},{unit.get('y')}") in embarked:
+                unit["embarked"] = True
     except Exception:  # never let the stats engine break the state response
         pass
 
@@ -482,7 +493,7 @@ def _build_state(save: dict, game_id: str) -> dict:
         "baseRuleset": game_params.get("baseRuleset"),
         "mods": mods,
         "tiles": tiles,
-        "units": _extract_units(save),
+        "units": units,
         "cities": cities,
         "attacks": _civ_attacks(save),
         "civs": _player_civs(save),
