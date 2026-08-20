@@ -34,6 +34,12 @@ import java.util.List;
 public class StatDaemon {
     private static List<String> strategicResources = null;  // ruleset is loaded once
 
+    // Rankings screen columns (Unciv RankingType), in display order.
+    private static final String[] RANKING_TYPES = {
+        "Score", "Population", "Growth", "Production", "Gold",
+        "Territory", "Force", "Happiness", "Technologies", "Culture",
+    };
+
     public static void main(String[] args) throws Exception {
         // Protocol channel: raw autoflush stream on fd 1 (Unciv replaces System.out
         // with a buffered wrapper whose flush() doesn't reliably reach fd 1 while the
@@ -132,9 +138,29 @@ public class StatDaemon {
                 }
                 sb.append("},");
 
-                // Owner era (drives era-variant improvement/city/embark textures) and
-                // the positions of this civ's embarked units (land units on water).
+                // Owner era (drives era-variant improvement/city/embark textures).
                 sb.append("\"era\":\"").append(esc(civ.getEra().getName())).append("\",");
+
+                // Rankings screen: each stat's value (Unciv getStatForRanking), alive
+                // flag (defeated civs show at the bottom with no value), and major flag
+                // (the rankings screen lists only major civs, not city-states).
+                sb.append("\"major\":").append(civ.isMajorCiv()).append(",");
+                sb.append("\"alive\":").append(!civ.isDefeated()).append(",");
+                sb.append("\"ranking\":{");
+                boolean rkf = true;
+                for (String rt : RANKING_TYPES) {
+                    if (!rkf) sb.append(",");
+                    rkf = false;
+                    int rv;
+                    try {
+                        rv = civ.getStatForRanking(
+                            com.unciv.ui.screens.victoryscreen.RankingType.valueOf(rt));
+                    } catch (Throwable e) { rv = 0; }
+                    sb.append("\"").append(rt).append("\":").append(rv);
+                }
+                sb.append("},");
+
+                // Positions of this civ's embarked units (land units on water).
                 sb.append("\"embarked\":[");
                 boolean ef = true;
                 java.util.Iterator<com.unciv.logic.map.mapunit.MapUnit> uit =

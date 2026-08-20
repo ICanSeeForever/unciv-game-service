@@ -512,6 +512,13 @@ def _build_state(save: dict, game_id: str) -> dict:
                 # Owner era — drives era-variant improvement/city/embark textures.
                 if inc.get("era"):
                     civ_stats[name]["era"] = str(inc["era"])
+                # Rankings screen (per-stat values + alive/major flags).
+                if "ranking" in inc:
+                    civ_stats[name]["ranking"] = {
+                        k: int(v) for k, v in (inc.get("ranking") or {}).items()
+                    }
+                    civ_stats[name]["alive"] = bool(inc.get("alive", True))
+                    civ_stats[name]["major"] = bool(inc.get("major", False))
             for xy, cs in (inc.get("cities") or {}).items():
                 city_stats[(name, xy)] = cs
         # Overlay exact growth/starvation/production/strength onto each city plate.
@@ -568,14 +575,21 @@ def _build_state(save: dict, game_id: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _natural_key(s: str) -> list:
+    """Alphanumeric sort key: split into text/number chunks so within one name family
+    the digits sort numerically (game1, game2, …, game12 — not game1, game12, game2)."""
+    return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", s)]
+
+
 @browser.get("/games", summary="Games available to spectate (backup folders)")
 async def list_games():
     base = Path(settings.get_backup_path())
     if not base.is_dir():
         return {"games": []}
     names = sorted(
-        d.name for d in base.iterdir()
-        if d.is_dir() and d.name not in _RESERVED_FOLDERS
+        (d.name for d in base.iterdir()
+         if d.is_dir() and d.name not in _RESERVED_FOLDERS),
+        key=_natural_key,
     )
     return {"games": names}
 
