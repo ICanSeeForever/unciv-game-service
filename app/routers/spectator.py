@@ -316,6 +316,33 @@ def _is_spectatable(name: str) -> bool:
     return st is None or st in _ENDED_STATUSES
 
 
+# UUIDs of games that are NOT finished, so the by-UUID live-save endpoint can reject
+# them too (the by-name endpoints already do). Only non-ended games are resolved (a
+# tiny set), and the result is cached by the session-index mtime.
+_blocked_uuids_cache: dict = {"mtime": -1.0, "set": set()}
+
+
+def _blocked_uuids() -> set[str]:
+    try:
+        mtime = _CORE_SESSIONS_PATH.stat().st_mtime
+    except OSError:
+        return set()
+    if mtime != _blocked_uuids_cache["mtime"]:
+        blocked: set[str] = set()
+        for name, st in _session_statuses().items():
+            if st in _ENDED_STATUSES:
+                continue
+            try:
+                uuid = _resolve_uuid(_backup_folder(name))
+            except HTTPException:
+                uuid = None
+            if uuid:
+                blocked.add(uuid)
+        _blocked_uuids_cache["mtime"] = mtime
+        _blocked_uuids_cache["set"] = blocked
+    return _blocked_uuids_cache["set"]
+
+
 def _unbox_num(v) -> float:
     """Old libGDX JSON boxes numbers as {"class": ..., "value": N}; new saves store a
     plain int. Return the numeric value from either form (0 if not numeric)."""
@@ -487,6 +514,8 @@ def _civ_economy(save: dict) -> dict:
 async def spectator_state(game_id: str):
     if not _GAME_ID_RE.match(game_id):
         raise HTTPException(status_code=400, detail="Invalid game_id format")
+    if game_id in _blocked_uuids():
+        raise HTTPException(status_code=403, detail="Game is not finished")
     try:
         save = await get_save_dict(game_id)
     except FileNotFoundError as e:
