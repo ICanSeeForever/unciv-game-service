@@ -13,6 +13,8 @@ services:
       - ${CIV_PATH}:/data/unciv
       # Place Unciv.jar next to docker-compose.yml for local launcher
       - ./Unciv.jar:/opt/unciv/Unciv.jar
+      # Read-only: core-service user cards (playerId -> telegram nick) for the viewer.
+      - /var/docker/compose/unciv-core-service/data:/data/core:ro
     networks:
       - civ_network
 

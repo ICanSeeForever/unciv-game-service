@@ -5,6 +5,7 @@ frontend is public and renders exactly this data, so we expose a denormalized,
 read-only projection of the save instead of shipping the game-service API key
 to the web tier. Games are addressed by unguessable UUIDs.
 """
+import json
 import os
 import re
 import tarfile
@@ -249,6 +250,35 @@ def _player_civs(save: dict) -> list[str]:
     return out
 
 
+# core-service user cards (playerId -> telegram nick), mounted read-only. Cached by
+# file mtime so nick changes are picked up without a restart.
+_CORE_CARDS_PATH = Path("/data/core/global_params.json")
+_cards_cache: dict = {"mtime": -1.0, "map": {}}
+
+
+def _player_id_to_name() -> dict[str, str]:
+    """{playerId: telegram nick} from core-service's USER_CARDS, or {} if unavailable."""
+    try:
+        mtime = _CORE_CARDS_PATH.stat().st_mtime
+    except OSError:
+        return {}
+    if mtime != _cards_cache["mtime"]:
+        out: dict[str, str] = {}
+        try:
+            data = json.loads(_CORE_CARDS_PATH.read_text("utf-8"))
+            for card in (data.get("USER_CARDS") or []):
+                uid = str(card.get("id") or "")
+                tr = card.get("transports") or {}
+                name = tr.get("telegram") or next((n for n in tr.values() if n), None)
+                if uid and name:
+                    out[uid] = str(name)
+        except Exception:
+            out = {}
+        _cards_cache["mtime"] = mtime
+        _cards_cache["map"] = out
+    return _cards_cache["map"]
+
+
 def _unbox_num(v) -> float:
     """Old libGDX JSON boxes numbers as {"class": ..., "value": N}; new saves store a
     plain int. Return the numeric value from either form (0 if not numeric)."""
@@ -473,6 +503,13 @@ def _build_state(save: dict, game_id: str) -> dict:
     units = _extract_units(save)
     civ_stats = _civ_economy(save)
     religions = _religions(save)
+    # Telegram nick per nation (save playerId -> core-service user card), if known.
+    id_to_name = _player_id_to_name()
+    if id_to_name:
+        for civ in save.get("civilizations") or []:
+            name, pid = civ.get("civName"), str(civ.get("playerId") or "")
+            if name in civ_stats and pid and id_to_name.get(pid):
+                civ_stats[name]["player"] = id_to_name[pid]
     # Per-turn income / net happiness + policy timing, resources and per-city plate
     # numbers — all exact, from the native Unciv engine (the real game code headless).
     # If the engine is unavailable these fields are simply absent (no approximation).
@@ -590,6 +627,7 @@ async def list_games():
         (d.name for d in base.iterdir()
          if d.is_dir() and d.name not in _RESERVED_FOLDERS),
         key=_natural_key,
+        reverse=True,  # newest/highest first (game29 … game1)
     )
     return {"games": names}
 
