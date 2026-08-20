@@ -633,6 +633,8 @@ def _build_state(save: dict, game_id: str) -> dict:
                 city["starvationTurns"] = int(cs.get("starve", -1))
                 city["productionTurns"] = int(cs.get("production", -1))
                 city["strength"] = int(cs.get("strength", -1))
+                city["health"] = int(cs.get("health", -1))
+                city["maxHealth"] = int(cs.get("maxHealth", -1))
         # Real per-tile yield (owning city's exact stats) for the yields overlay;
         # neutral tiles keep their base yield (computed on the frontend).
         tile_yields = (income or {}).get("__tileYields__") or {}
