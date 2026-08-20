@@ -152,7 +152,8 @@ def _unit_trail(unit: dict, cur_x: int, cur_y: int) -> list[dict]:
     return points
 
 
-def _unit_record(unit: dict, x: int, y: int, *, military: bool, air: bool) -> dict:
+def _unit_record(unit: dict, x: int, y: int, *, military: bool, air: bool,
+                 building: str | None = None) -> dict:
     """Normalize one unit for the viewer (position, move arrow, attack targets)."""
     health = unit.get("health")
     # A pending multi-turn move is stored as action "moveTo <x>,<y>" — Unciv draws
@@ -186,6 +187,11 @@ def _unit_record(unit: dict, x: int, y: int, *, military: bool, air: bool) -> di
         "moveTo": move_to,
         "attacks": attacks,
         "promotions": promotions,
+        # Status shown in the viewer: fortified (flag → shield), sleeping (sleep
+        # sub-badge), or the improvement a worker is building (shown in a sub-badge).
+        "fortified": action.startswith("Fortify"),
+        "sleeping": action.startswith("Sleep"),
+        "building": building,
     }
 
 
@@ -197,10 +203,16 @@ def _extract_units(save: dict) -> list[dict]:
             continue
         pos = tile.get("position") or {}
         x, y = pos.get("x", 0), pos.get("y", 0)
+        # Improvement being built on this tile (worker action) — attach to the
+        # civilian unit standing on it, which is the one doing the building.
+        q = tile.get("improvementQueue") or []
+        building = q[0].get("improvement") if q and isinstance(q[0], dict) else None
         for key in ("civilianUnit", "militaryUnit"):
             unit = tile.get(key)
             if isinstance(unit, dict):
-                units.append(_unit_record(unit, x, y, military=key == "militaryUnit", air=False))
+                units.append(_unit_record(
+                    unit, x, y, military=key == "militaryUnit", air=False,
+                    building=building if key == "civilianUnit" else None))
         # Air units are a LIST on the tile (a city can hold several).
         for unit in tile.get("airUnits") or []:
             if isinstance(unit, dict):
