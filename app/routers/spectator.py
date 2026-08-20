@@ -551,6 +551,7 @@ def _build_state(save: dict, game_id: str) -> dict:
             "resource": tile.get("resource"),
             "resourceAmount": tile.get("resourceAmount") or 0,
             "improvement": tile.get("improvement"),
+            "naturalWonder": tile.get("naturalWonder"),
             "roadStatus": tile.get("roadStatus"),
             "owningCiv": owners.get((x, y)),
             "worked": (x, y) in worked,
