@@ -5,28 +5,52 @@ import com.unciv.logic.files.UncivFiles;
 import com.unciv.logic.GameInfo;
 import com.unciv.logic.civilization.Civilization;
 import com.unciv.models.stats.Stats;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
 import java.nio.file.*;
 import java.nio.charset.StandardCharsets;
 
 /**
- * Headless stat dumper: loads a save with the native Unciv engine and prints, as a
- * single JSON line prefixed with "STATS_JSON=", each civ's per-turn income + net
- * happiness exactly as the game's world-screen top bar computes them.
+ * Warm headless stat engine. Same math as StatDumper, but the ruleset + JVM stay
+ * loaded across many saves so JIT can warm up: a single cold call is ~5s, every
+ * subsequent one ~1s (vs. ~6s per fresh StatDumper process).
  *
- * Bootstraps like Unciv's --creategame console path (no display): UncivGame(true) +
- * RulesetCache.loadRulesets(consoleMode). Run with cwd containing jsons/ (extracted
- * from Unciv.jar) and mods/<baseRuleset>/. Compiled against + run on Unciv.jar.
+ * Protocol (line-based over stdin/stdout, driven by native_stats.py):
+ *   - On startup, after the ruleset loads, prints "DAEMON_READY".
+ *   - For each line of stdin = absolute path to a save file, prints exactly one line:
+ *       "STATS_JSON={...}"   on success, or
+ *       "STATS_ERROR=<msg>"  if that one save fails (the daemon keeps running).
+ *   - A blank line or "__QUIT__" shuts the daemon down.
+ * A bad save never kills the process, so game-service can rely on the warm engine.
  */
-public class StatDumper {
+public class StatDaemon {
     public static void main(String[] args) throws Exception {
         UncivGame game = new UncivGame(true);
         UncivGame.Companion.setCurrent(game);
         game.setSettings(new GameSettings());
         RulesetCache.INSTANCE.loadRulesets(true, false);
 
-        String save = new String(Files.readAllBytes(Paths.get(args[0])), StandardCharsets.UTF_8);
-        GameInfo gi = UncivFiles.Companion.gameInfoFromString(save);
+        System.out.println("DAEMON_READY");
+        System.out.flush();
 
+        BufferedReader in = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
+        String path;
+        while ((path = in.readLine()) != null) {
+            path = path.trim();
+            if (path.isEmpty() || path.equals("__QUIT__")) break;
+            try {
+                String save = new String(Files.readAllBytes(Paths.get(path)), StandardCharsets.UTF_8);
+                GameInfo gi = UncivFiles.Companion.gameInfoFromString(save);
+                System.out.println(dump(gi));
+            } catch (Throwable t) {
+                System.out.println("STATS_ERROR=" + String.valueOf(t.getMessage()).replace("\n", " "));
+            }
+            System.out.flush();
+        }
+        System.exit(0);
+    }
+
+    private static String dump(GameInfo gi) {
         StringBuilder sb = new StringBuilder("STATS_JSON={");
         boolean first = true;
         for (Civilization civ : gi.getCivilizations()) {
@@ -49,11 +73,7 @@ public class StatDumper {
             }
         }
         sb.append("}");
-        System.out.println(sb.toString());
-        System.out.flush();
-        // Unciv spawns non-daemon background threads (threadpool-nondaemon) that keep
-        // the JVM alive ~55s after main() returns. Force exit now: the answer is printed.
-        System.exit(0);
+        return sb.toString();
     }
 
     private static String esc(String s) {

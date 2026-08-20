@@ -1,15 +1,24 @@
 """Exact per-civ income / happiness via the native Unciv engine.
 
 Instead of reimplementing Unciv's stats math (a moving target), we run the real
-game code headless: a tiny wrapper (native_engine/StatDumper.java) is compiled
-against the same Unciv.jar the bot games run on, loads a save with the native
-engine, and prints each civ's `statsForNextTurn` + `getHappiness()` — the exact
-figures the world-screen top bar shows.
+game code headless: tiny wrappers compiled against the same Unciv.jar the bot games
+run on load a save with the native engine and print each civ's `statsForNextTurn` +
+`getHappiness()` — the exact figures the world-screen top bar shows.
+
+Two run modes, tried in order:
+
+  1. **Warm daemon** (`StatDaemon`): one long-lived JVM that loads the ruleset once
+     and stays resident, so JIT warms up — a cold call is ~5s, every later one ~1s.
+     game-service feeds it save paths over stdin and reads one `STATS_JSON=` line back.
+  2. **One-shot** (`StatDumper`): a fresh JVM per call (~6s) used only if the daemon
+     can't start or has died mid-flight.
+
+Both cost ~60s if the JVM is allowed to exit on its own (Unciv keeps non-daemon
+background threads alive), so both `System.exit(0)` the moment the answer is printed.
 
 Engine prep (once per process): extract the builtin rulesets (`jsons/`) from the
-mounted Unciv.jar, drop in the bundled base-ruleset mod (`mods/`), and compile
-StatDumper against the jar. Per call: run `java … StatDumper <save>` and parse the
-`STATS_JSON=` line. Results are cached by save hash (turn states are immutable).
+mounted Unciv.jar, drop in the bundled base-ruleset mod (`mods/`), and compile the
+wrappers against the jar. Results are cached by save hash (turn states are immutable).
 Any failure returns None so the caller can fall back to the pure-Python engine.
 """
 from __future__ import annotations
@@ -17,6 +26,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import select
 import shutil
 import subprocess
 import threading
@@ -30,19 +40,27 @@ logger = logging.getLogger(__name__)
 _SRC_DIR = Path(__file__).parent / "native_engine"
 _ENGINE_DIR = Path("/tmp/unciv_stat_engine")
 _JAR = settings.unciv_jar_path
+_CP = f"{_JAR}:{_ENGINE_DIR}"
 
-_lock = threading.Lock()
+_prep_lock = threading.Lock()
 _ready: bool | None = None  # None = not yet attempted
+
 _cache: dict[str, dict] = {}
 _CACHE_MAX = 512
 
+# Warm-daemon state, guarded by _daemon_lock (also serializes stdin/stdout I/O).
+_daemon_lock = threading.Lock()
+_daemon: subprocess.Popen | None = None
+_DAEMON_READY_TIMEOUT = 60.0   # ruleset load + first JIT
+_DAEMON_CALL_TIMEOUT = 45.0    # per-save compute (cold first call is the slow one)
+
 
 def _prepare() -> bool:
-    """Idempotently build the engine working dir (jsons + mods + compiled wrapper)."""
+    """Idempotently build the engine working dir (jsons + mods + compiled wrappers)."""
     global _ready
     if _ready is not None:
         return _ready
-    with _lock:
+    with _prep_lock:
         if _ready is not None:
             return _ready
         try:
@@ -63,10 +81,10 @@ def _prepare() -> bool:
             mods_src = _SRC_DIR / "mods"
             if mods_src.exists():
                 shutil.copytree(mods_src, _ENGINE_DIR / "mods", dirs_exist_ok=True)
-            # Compile the wrapper against the exact runtime jar (needs a JDK).
+            # Compile both wrappers against the exact runtime jar (needs a JDK).
             proc = subprocess.run(
                 ["javac", "-cp", str(jar), "-d", str(_ENGINE_DIR),
-                 str(_SRC_DIR / "StatDumper.java")],
+                 str(_SRC_DIR / "StatDumper.java"), str(_SRC_DIR / "StatDaemon.java")],
                 capture_output=True, text=True, timeout=180,
             )
             if proc.returncode != 0:
@@ -82,10 +100,123 @@ def _prepare() -> bool:
             return _ready
 
 
+def _read_line(pipe, timeout: float) -> str | None:
+    """Blocking readline with a wall-clock cap (Linux select on the pipe fd)."""
+    import time
+    deadline = time.monotonic() + timeout
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        r, _, _ = select.select([pipe], [], [], remaining)
+        if not r:
+            return None
+        line = pipe.readline()
+        if line == "":  # EOF — process gone
+            return None
+        return line.rstrip("\n")
+
+
+def _daemon_alive() -> bool:
+    return _daemon is not None and _daemon.poll() is None
+
+
+def _start_daemon() -> bool:
+    """Spawn the warm daemon and wait for DAEMON_READY. Caller holds _daemon_lock."""
+    global _daemon
+    try:
+        proc = subprocess.Popen(
+            ["java", "-Djava.awt.headless=true", "-cp", _CP, "StatDaemon"],
+            cwd=str(_ENGINE_DIR),
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True, bufsize=1,
+        )
+    except Exception:
+        logger.exception("native stats: failed to spawn daemon")
+        return False
+    # Wait for readiness (skip Unciv's own log lines until DAEMON_READY).
+    while True:
+        line = _read_line(proc.stdout, _DAEMON_READY_TIMEOUT)
+        if line is None:
+            logger.warning("native stats: daemon did not become ready; killing")
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            return False
+        if line.strip() == "DAEMON_READY":
+            _daemon = proc
+            logger.info("native stats: warm daemon ready (pid=%s)", proc.pid)
+            return True
+
+
+def _kill_daemon() -> None:
+    global _daemon
+    if _daemon is not None:
+        try:
+            _daemon.kill()
+        except Exception:
+            pass
+        _daemon = None
+
+
+def _compute_via_daemon(save_file: Path) -> dict | None:
+    """Send a save path to the warm daemon and parse its STATS_JSON reply.
+    Restarts the daemon once on failure. Caller holds _daemon_lock."""
+    for attempt in (1, 2):
+        if not _daemon_alive():
+            if not _start_daemon():
+                return None
+        try:
+            _daemon.stdin.write(f"{save_file}\n")
+            _daemon.stdin.flush()
+        except Exception:
+            _kill_daemon()
+            continue
+        # Read until we get a result line (skip stray log lines the JVM may emit).
+        while True:
+            line = _read_line(_daemon.stdout, _DAEMON_CALL_TIMEOUT)
+            if line is None:
+                logger.warning("native stats: daemon timed out/died (attempt %s)", attempt)
+                _kill_daemon()
+                break  # retry with a fresh daemon
+            if line.startswith("STATS_JSON="):
+                try:
+                    return json.loads(line[len("STATS_JSON="):])
+                except Exception:
+                    logger.warning("native stats: bad STATS_JSON from daemon")
+                    return None
+            if line.startswith("STATS_ERROR="):
+                logger.warning("native stats: daemon reported %s", line)
+                return None
+            # else: unrelated log line — keep reading
+    return None
+
+
+def _compute_via_oneshot(save_file: Path) -> dict | None:
+    """Fallback: a fresh StatDumper JVM per call (used only if the daemon is down)."""
+    try:
+        proc = subprocess.run(
+            ["java", "-Djava.awt.headless=true", "-cp", _CP, "StatDumper", str(save_file)],
+            cwd=str(_ENGINE_DIR), capture_output=True, text=True, timeout=90,
+        )
+    except Exception:
+        logger.exception("native stats: one-shot run failed")
+        return None
+    for line in proc.stdout.splitlines():
+        if line.startswith("STATS_JSON="):
+            try:
+                return json.loads(line[len("STATS_JSON="):])
+            except Exception:
+                return None
+    logger.warning("native stats: no STATS_JSON from one-shot; stderr=%s", proc.stderr[-400:])
+    return None
+
+
 def compute_income_native(save_string: str) -> dict | None:
     """Return {civName: {gold, science, culture, faith, happiness}} via the native
     engine, or None if unavailable/failed. `save_string` is the raw Unciv save
-    (base64+gzip). Cached by save hash."""
+    (base64+gzip). Cached by save hash; warm daemon first, one-shot as fallback."""
     if not save_string or not _prepare():
         return None
     key = hashlib.sha1(save_string.encode("utf-8")).hexdigest()
@@ -95,19 +226,11 @@ def compute_income_native(save_string: str) -> dict | None:
     save_file = _ENGINE_DIR / f"_save_{key}.txt"
     try:
         save_file.write_text(save_string, encoding="utf-8")
-        proc = subprocess.run(
-            ["java", "-Djava.awt.headless=true", "-cp", f"{_JAR}:{_ENGINE_DIR}",
-             "StatDumper", str(save_file)],
-            cwd=str(_ENGINE_DIR), capture_output=True, text=True, timeout=90,
-        )
-        result: dict | None = None
-        for line in proc.stdout.splitlines():
-            if line.startswith("STATS_JSON="):
-                result = json.loads(line[len("STATS_JSON="):])
-                break
+        with _daemon_lock:
+            result = _compute_via_daemon(save_file)
         if result is None:
-            logger.warning("native stats: no STATS_JSON in output; stderr=%s",
-                           proc.stderr[-400:])
+            result = _compute_via_oneshot(save_file)
+        if result is None:
             return None
         if len(_cache) > _CACHE_MAX:
             _cache.clear()
