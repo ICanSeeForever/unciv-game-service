@@ -223,10 +223,14 @@ public class StatDaemon {
         try { strength = new CityCombatant(c).getDefendingStrength(null); }
         catch (Throwable t) { strength = -1; }
         // Current / max HP (max varies with buildings & era) — the viewer draws a
-        // health bar only when health < maxHealth.
+        // health bar only when health < maxHealth. Both come from the ICombatant
+        // interface (City has no getMaxHealth()).
         int health = -1, maxHealth = -1;
-        try { health = c.getHealth(); } catch (Throwable t) { health = -1; }
-        try { maxHealth = c.getMaxHealth(); } catch (Throwable t) { maxHealth = -1; }
+        try {
+            CityCombatant cc = new CityCombatant(c);
+            health = cc.getHealth();
+            maxHealth = cc.getMaxHealth();
+        } catch (Throwable t) { health = -1; maxHealth = -1; }
         sb.append("\"").append(x).append(",").append(y).append("\":{")
           .append("\"growth\":").append(grow == null ? -1 : grow).append(",")
           .append("\"starve\":").append(starve == null ? -1 : starve).append(",")
