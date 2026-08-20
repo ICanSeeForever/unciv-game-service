@@ -117,6 +117,19 @@ public class StatDaemon {
                     cf = false;
                     appendCity(sb, c);
                 }
+                sb.append("},");
+
+                // Turns to research each not-yet-researched tech (native turnsToTech,
+                // which accounts for already-accumulated research + cost modifiers).
+                sb.append("\"techTurns\":{");
+                boolean tf = true;
+                for (String tech : gi.getRuleset().getTechnologies().keySet()) {
+                    if (civ.getTech().isResearched(tech)) continue;
+                    if (!tf) sb.append(",");
+                    tf = false;
+                    sb.append("\"").append(esc(tech)).append("\":")
+                      .append(parseTurns(civ.getTech().turnsToTech(tech)));
+                }
                 sb.append("}}");
             } catch (Throwable t) {
                 // Leave this civ out; the caller falls back for it.
@@ -146,6 +159,19 @@ public class StatDaemon {
           .append("\"production\":").append(production).append(",")
           .append("\"strength\":").append(strength)
           .append("}");
+    }
+
+    /** Leading integer of a turnsToTech() string ("2", "∞", …); -1 if none. */
+    private static int parseTurns(String s) {
+        if (s == null) return -1;
+        StringBuilder d = new StringBuilder();
+        for (int i = 0; i < s.length(); i++) {
+            char ch = s.charAt(i);
+            if (ch >= '0' && ch <= '9') d.append(ch);
+            else if (d.length() > 0) break;
+        }
+        if (d.length() == 0) return -1;  // "∞" or non-numeric
+        try { return Integer.parseInt(d.toString()); } catch (Exception e) { return -1; }
     }
 
     /** Turns until the next social policy: -1 = ready now ("!"), -2 = no culture income. */

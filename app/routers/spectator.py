@@ -455,6 +455,11 @@ def _build_state(save: dict, game_id: str) -> dict:
                     civ_stats[name]["resources"] = {
                         k: int(v) for k, v in (inc.get("resources") or {}).items()
                     }
+                # Exact turns-to-research per not-yet-researched tech (native turnsToTech).
+                if "techTurns" in inc:
+                    civ_stats[name]["techTurns"] = {
+                        k: int(v) for k, v in (inc.get("techTurns") or {}).items()
+                    }
             for xy, cs in (inc.get("cities") or {}).items():
                 city_stats[(name, xy)] = cs
         # Overlay exact growth/starvation/production/strength onto each city plate.
