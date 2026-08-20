@@ -26,7 +26,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import select
+import queue
 import shutil
 import subprocess
 import threading
@@ -49,8 +49,14 @@ _cache: dict[str, dict] = {}
 _CACHE_MAX = 512
 
 # Warm-daemon state, guarded by _daemon_lock (also serializes stdin/stdout I/O).
+# A dedicated reader thread drains the daemon's stdout into _daemon_q: mixing
+# select() with a buffered pipe is unreliable (readline() pulls a line into Python's
+# buffer, then select() reports the fd "empty" and we'd miss it), so we never select
+# on the pipe — a blocking thread reads lines and the request side gets them with a
+# queue timeout.
 _daemon_lock = threading.Lock()
 _daemon: subprocess.Popen | None = None
+_daemon_q: "queue.Queue[str | None]" | None = None
 _DAEMON_READY_TIMEOUT = 60.0   # ruleset load + first JIT
 _DAEMON_CALL_TIMEOUT = 45.0    # per-save compute (cold first call is the slow one)
 
@@ -100,21 +106,14 @@ def _prepare() -> bool:
             return _ready
 
 
-def _read_line(pipe, timeout: float) -> str | None:
-    """Blocking readline with a wall-clock cap (Linux select on the pipe fd)."""
-    import time
-    deadline = time.monotonic() + timeout
-    while True:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            return None
-        r, _, _ = select.select([pipe], [], [], remaining)
-        if not r:
-            return None
-        line = pipe.readline()
-        if line == "":  # EOF — process gone
-            return None
-        return line.rstrip("\n")
+def _q_get(timeout: float) -> str | None:
+    """Next daemon stdout line, or None on EOF/timeout. Caller holds _daemon_lock."""
+    if _daemon_q is None:
+        return None
+    try:
+        return _daemon_q.get(timeout=timeout)  # None = EOF sentinel from the reader
+    except queue.Empty:
+        return None
 
 
 def _daemon_alive() -> bool:
@@ -123,7 +122,7 @@ def _daemon_alive() -> bool:
 
 def _start_daemon() -> bool:
     """Spawn the warm daemon and wait for DAEMON_READY. Caller holds _daemon_lock."""
-    global _daemon
+    global _daemon, _daemon_q
     try:
         proc = subprocess.Popen(
             ["java", "-Djava.awt.headless=true", "-cp", _CP, "StatDaemon"],
@@ -134,30 +133,40 @@ def _start_daemon() -> bool:
     except Exception:
         logger.exception("native stats: failed to spawn daemon")
         return False
+    q: "queue.Queue[str | None]" = queue.Queue()
+
+    def _reader() -> None:
+        try:
+            for line in proc.stdout:  # blocking; safe on its own thread
+                q.put(line.rstrip("\n"))
+        except Exception:
+            pass
+        finally:
+            q.put(None)  # EOF sentinel
+
+    threading.Thread(target=_reader, name="native-stats-reader", daemon=True).start()
+    _daemon, _daemon_q = proc, q
     # Wait for readiness (skip Unciv's own log lines until DAEMON_READY).
     while True:
-        line = _read_line(proc.stdout, _DAEMON_READY_TIMEOUT)
+        line = _q_get(_DAEMON_READY_TIMEOUT)
         if line is None:
             logger.warning("native stats: daemon did not become ready; killing")
-            try:
-                proc.kill()
-            except Exception:
-                pass
+            _kill_daemon()
             return False
         if line.strip() == "DAEMON_READY":
-            _daemon = proc
             logger.info("native stats: warm daemon ready (pid=%s)", proc.pid)
             return True
 
 
 def _kill_daemon() -> None:
-    global _daemon
+    global _daemon, _daemon_q
     if _daemon is not None:
         try:
             _daemon.kill()
         except Exception:
             pass
-        _daemon = None
+    _daemon = None
+    _daemon_q = None
 
 
 def _compute_via_daemon(save_file: Path) -> dict | None:
@@ -175,7 +184,7 @@ def _compute_via_daemon(save_file: Path) -> dict | None:
             continue
         # Read until we get a result line (skip stray log lines the JVM may emit).
         while True:
-            line = _read_line(_daemon.stdout, _DAEMON_CALL_TIMEOUT)
+            line = _q_get(_DAEMON_CALL_TIMEOUT)
             if line is None:
                 logger.warning("native stats: daemon timed out/died (attempt %s)", attempt)
                 _kill_daemon()

@@ -6,7 +6,10 @@ import com.unciv.logic.GameInfo;
 import com.unciv.logic.civilization.Civilization;
 import com.unciv.models.stats.Stats;
 import java.io.BufferedReader;
+import java.io.FileDescriptor;
+import java.io.FileOutputStream;
 import java.io.InputStreamReader;
+import java.io.PrintStream;
 import java.nio.file.*;
 import java.nio.charset.StandardCharsets;
 
@@ -25,13 +28,18 @@ import java.nio.charset.StandardCharsets;
  */
 public class StatDaemon {
     public static void main(String[] args) throws Exception {
+        // Protocol channel: a raw autoflush stream straight onto fd 1. Unciv replaces
+        // System.out with its own *buffered* stream (adds timestamps), whose flush()
+        // doesn't reliably reach fd 1 while the JVM stays alive — so the parent would
+        // never see our lines. Writing to FileDescriptor.out sidesteps that wrapper.
+        PrintStream out = new PrintStream(new FileOutputStream(FileDescriptor.out), true, "UTF-8");
+
         UncivGame game = new UncivGame(true);
         UncivGame.Companion.setCurrent(game);
         game.setSettings(new GameSettings());
         RulesetCache.INSTANCE.loadRulesets(true, false);
 
-        System.out.println("DAEMON_READY");
-        System.out.flush();
+        out.println("DAEMON_READY");
 
         BufferedReader in = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
         String path;
@@ -41,11 +49,10 @@ public class StatDaemon {
             try {
                 String save = new String(Files.readAllBytes(Paths.get(path)), StandardCharsets.UTF_8);
                 GameInfo gi = UncivFiles.Companion.gameInfoFromString(save);
-                System.out.println(dump(gi));
+                out.println(dump(gi));
             } catch (Throwable t) {
-                System.out.println("STATS_ERROR=" + String.valueOf(t.getMessage()).replace("\n", " "));
+                out.println("STATS_ERROR=" + String.valueOf(t.getMessage()).replace("\n", " "));
             }
-            System.out.flush();
         }
         System.exit(0);
     }
