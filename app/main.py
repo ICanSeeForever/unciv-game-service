@@ -71,6 +71,11 @@ app.include_router(backups_router, dependencies=_auth)
 # now behind api_key like the rest.
 app.include_router(spectator_router, dependencies=_auth)
 app.include_router(spectator_browser_router, dependencies=_auth)
+# Internal-only (api_key): homepage active-games summary. Not proxied publicly by
+# core (which only forwards /spectator and /games), so it stays core-to-service.
+from app.routers.internal import router as internal_router
+
+app.include_router(internal_router, dependencies=_auth)
 
 
 @app.get("/health", tags=["health"], summary="Health check")
