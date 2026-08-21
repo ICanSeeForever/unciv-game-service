@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from app.game.fetcher import get_save_dict
+from app.game.native_stats import compute_income_native
+from app.game.parser import encode_save
 from app.routers.spectator import (
     _backup_folder, _has_live_save, _player_civs, _resolve_uuid,
     _session_statuses, _ENDED_STATUSES,
@@ -77,3 +79,24 @@ async def active_summary() -> dict:
             "players": _roster(save),
         })
     return {"games": games}
+
+
+@router.get("/score/{name}", summary="Актуальный счёт активной игры (движок, по клику)")
+async def score(name: str) -> dict:
+    """Ленивый расчёт счёта (getStatForRanking → Score) движком для live-сейва.
+    Тяжёлый путь — зовётся только по кнопке на карточке главной."""
+    try:
+        folder = _backup_folder(name)
+    except Exception:
+        raise HTTPException(status_code=404, detail="game not found")
+    uuid = _resolve_uuid(folder)
+    if not uuid or not _has_live_save(uuid):
+        raise HTTPException(status_code=404, detail="no live save")
+    save = await get_save_dict(uuid)
+    income = compute_income_native(encode_save(save)) or {}
+    scores = []
+    for civ_name, inc in income.items():
+        ranking = (inc or {}).get("ranking") or {}
+        if "Score" in ranking:
+            scores.append({"nation": civ_name, "score": int(ranking["Score"])})
+    return {"name": name, "scores": scores}
