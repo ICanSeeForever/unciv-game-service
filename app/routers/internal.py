@@ -93,9 +93,13 @@ async def score(name: str) -> dict:
     if not uuid or not _has_live_save(uuid):
         raise HTTPException(status_code=404, detail="no live save")
     save = await get_save_dict(uuid)
+    # только нации-игроки (люди), как в списке на карточке — без городов-государств
+    human = {p["nation"] for p in _roster(save)}
     income = compute_income_native(encode_save(save)) or {}
     scores = []
     for civ_name, inc in income.items():
+        if civ_name not in human:
+            continue
         ranking = (inc or {}).get("ranking") or {}
         if "Score" in ranking:
             scores.append({"nation": civ_name, "score": int(ranking["Score"])})
