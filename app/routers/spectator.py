@@ -11,7 +11,7 @@ import re
 import tarfile
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from app.config import settings
 from app.game.fetcher import get_save_dict
@@ -713,9 +713,16 @@ async def list_games():
     return {"games": names}
 
 
+# core проверяет права (админ/модер, не участник) и ставит доверенный заголовок,
+# разрешающий смотреть активную игру. Наружу game-service не смотрит (api_key),
+# так что заголовок подделать неоткуда.
+def _spectate_allowed(name: str, request: Request) -> bool:
+    return _is_spectatable(name) or request.headers.get("X-Allow-Active") == "1"
+
+
 @browser.get("/games/{name}", summary="Turn list + live-save availability for a game")
-async def game_detail(name: str):
-    if not _is_spectatable(name):
+async def game_detail(name: str, request: Request):
+    if not _spectate_allowed(name, request):
         raise HTTPException(status_code=403, detail="Game is not finished")
     folder = _backup_folder(name)
     uuid = _resolve_uuid(folder)
@@ -730,9 +737,10 @@ async def game_detail(name: str):
 @browser.get("/games/{name}/state", summary="Spectator state for a game at a turn (or live)")
 async def game_state(
     name: str,
+    request: Request,
     turn: str = Query(..., description='Turn number, or "current" for the live save'),
 ):
-    if not _is_spectatable(name):
+    if not _spectate_allowed(name, request):
         raise HTTPException(status_code=403, detail="Game is not finished")
     folder = _backup_folder(name)
     if turn == "current":
