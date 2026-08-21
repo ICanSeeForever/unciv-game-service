@@ -75,6 +75,7 @@ async def active_summary() -> dict:
             "status": status,
             "turn": int(save.get("turns") or 0),
             "currentPlayer": save.get("currentPlayer"),
+            "currentTurnStartTime": int(save.get("currentTurnStartTime") or 0),
             "mapType": _map_type(save),
             "players": _roster(save),
         })
