@@ -44,6 +44,11 @@ class Settings(BaseSettings):
     # API key for all endpoints (leave empty to disable auth — dev/local only)
     api_key: str = ""
 
+    # Оффсайт-бэкап на второй сервер (neth): полный бэкап дополнительно
+    # POST'ится на приёмник. Пусто → отправка выключена (no-op).
+    backup_ip: str = ""        # URL приёмника, напр. http://neth:8099/upload
+    backup_password: str = ""  # общий секрет, приёмник его проверяет
+
     def get_backup_path(self) -> str:
         return self.backup_path or f"{self.civ_path}/backups"
 

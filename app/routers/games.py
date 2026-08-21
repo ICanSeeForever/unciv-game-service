@@ -2,6 +2,7 @@
 import asyncio
 import json
 import logging
+import os
 import re
 import tarfile
 
@@ -476,6 +477,33 @@ class BackupRequest(BaseModel):
     turn: int | None = None
     nation: str | None = None
     max_keep: int = 30
+    offsite: bool = False  # дополнительно отправить архив на второй сервер (neth)
+
+
+async def _send_offsite(archive_path: str, game: str | None = None) -> bool:
+    """Best-effort POST архива на приёмник (BACKUP_IP): multipart file + form
+    password (+ game — приёмник кладёт в backups/<game>/). Ошибка не роняет
+    бэкап (второй сервер может быть недоступен)."""
+    if not settings.backup_ip:
+        return False
+    try:
+        import httpx
+        data = {"password": settings.backup_password}
+        if game:
+            data["game"] = game
+        with open(archive_path, "rb") as f:
+            async with httpx.AsyncClient(timeout=180) as client:
+                resp = await client.post(
+                    settings.backup_ip,
+                    files={"file": (os.path.basename(archive_path), f, "application/gzip")},
+                    data=data)
+        if resp.status_code != 200:
+            logger.warning("offsite backup: приёмник вернул %s", resp.status_code)
+            return False
+        return True
+    except Exception:
+        logger.warning("offsite backup: отправка не удалась", exc_info=True)
+        return False
 
 
 @router.post(
@@ -500,7 +528,12 @@ async def create_game_backup(game_id: str, body: BackupRequest):
             nation=body.nation, max_keep=body.max_keep))
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    return {"ok": True, "backup_name": name, "subdirectory": body.subdirectory}
+    offsite_ok = False
+    if body.offsite:
+        # game = имя игры (для permanent subdirectory == session name)
+        offsite_ok = await _send_offsite(f"{backup_dir}/{name}", game=body.subdirectory)
+    return {"ok": True, "backup_name": name, "subdirectory": body.subdirectory,
+            "offsite": offsite_ok}
 
 
 # ---------------------------------------------------------------------------
