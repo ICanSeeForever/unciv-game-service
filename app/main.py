@@ -65,9 +65,12 @@ _auth = [Depends(verify_api_key)]
 app.include_router(games_router, dependencies=_auth)
 app.include_router(tasks_router, dependencies=_auth)
 app.include_router(backups_router, dependencies=_auth)
-# Public, read-only projection for the web viewer (no API key by design).
-app.include_router(spectator_router)
-app.include_router(spectator_browser_router)
+# Spectator projection for the web viewer. After the "flip" the sole web edge is
+# core-service (nginx /api/ → core), which reverse-proxies these paths here with
+# the internal API key. game-service is no longer internet-facing, so these are
+# now behind api_key like the rest.
+app.include_router(spectator_router, dependencies=_auth)
+app.include_router(spectator_browser_router, dependencies=_auth)
 
 
 @app.get("/health", tags=["health"], summary="Health check")
