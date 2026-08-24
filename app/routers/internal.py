@@ -110,7 +110,9 @@ async def game_meta(name: str) -> dict:
     return {
         "name": name,
         "version": _version_label(save),
-        "shape": mp.get("shape") or "",       # Hexagonal / Rectangular
+        # libGDX опускает дефолтные значения: если shape нет — это Hexagonal
+        # (дефолт Unciv MapShape).
+        "shape": mp.get("shape") or "Hexagonal",
         "genType": mp.get("type") or "",       # Perlin / Pangaea / …
         "sizeName": size.get("name") or "",    # Tiny…Huge / Custom
         "radius": size.get("radius") or 0,     # для Hexagonal
