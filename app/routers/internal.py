@@ -82,6 +82,49 @@ async def active_summary() -> dict:
     return {"games": games}
 
 
+def _version_label(save: dict) -> str:
+    """Версия Unciv из ``version.createdWith`` в формате как в Games.json."""
+    created = (save.get("version") or {}).get("createdWith") or {}
+    text = str(created.get("text") or "").strip()
+    build = str(created.get("number") or "").strip()
+    if text and build:
+        return f"{text} (Build {build})"
+    return text or build
+
+
+@router.get("/game-meta/{name}", summary="Мета активной игры из живого сейва")
+async def game_meta(name: str) -> dict:
+    """Версия Unciv, форма/тип/размер карты, world-wrap, рулсет/моды, скорость,
+    сложность, типы победы — из живого сейва. Движок не зовём (дёшево)."""
+    try:
+        folder = _backup_folder(name)
+    except Exception:
+        raise HTTPException(status_code=404, detail="game not found")
+    uuid = _resolve_uuid(folder)
+    if not uuid or not _has_live_save(uuid):
+        raise HTTPException(status_code=404, detail="no live save")
+    save = await get_save_dict(uuid)
+    mp = (save.get("tileMap") or {}).get("mapParameters") or {}
+    size = mp.get("mapSize") or {}
+    gp = save.get("gameParameters") or {}
+    return {
+        "name": name,
+        "version": _version_label(save),
+        "shape": mp.get("shape") or "",       # Hexagonal / Rectangular
+        "genType": mp.get("type") or "",       # Perlin / Pangaea / …
+        "sizeName": size.get("name") or "",    # Tiny…Huge / Custom
+        "radius": size.get("radius") or 0,     # для Hexagonal
+        "width": size.get("width") or 0,       # для Rectangular
+        "height": size.get("height") or 0,
+        "worldWrap": bool(mp.get("worldWrap", False)),
+        "baseRuleset": gp.get("baseRuleset") or "",
+        "mods": [m for m in (gp.get("mods") or []) if m],
+        "gameSpeed": gp.get("gameSpeed") or gp.get("speed") or "",
+        "difficulty": gp.get("difficulty") or "",
+        "victoryTypes": [v for v in (gp.get("victoryTypes") or []) if v],
+    }
+
+
 @router.get("/score/{name}", summary="Актуальный счёт активной игры (движок, по клику)")
 async def score(name: str) -> dict:
     """Ленивый расчёт счёта (getStatForRanking → Score) движком для live-сейва.
