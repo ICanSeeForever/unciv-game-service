@@ -134,6 +134,7 @@ async def purge_game(body: dict = Body(default={})) -> dict:
                 removed.append(path)
         except OSError:
             log.exception("purge-game: не удалось удалить %s", path)
+    log.info("purge-game[%s]: удалено %d — %s", name, len(removed), removed)
     return {"name": name, "removed": removed}
 
 
