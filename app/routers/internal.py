@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Body, HTTPException
 
+from app.config import settings
 from app.game.fetcher import get_save_dict
 from app.game.native_stats import compute_income_native
 from app.game.parser import encode_save
@@ -49,6 +50,31 @@ def _roster(save: dict) -> list[dict]:
     return out
 
 
+async def _summarize_game(name: str, status: str) -> dict | None:
+    """Сводка одной игры из живого сейва (roster/turn/map). None если сейва нет."""
+    try:
+        folder = _backup_folder(name)
+    except Exception:
+        return None
+    uuid = _resolve_uuid(folder)
+    if not uuid or not _has_live_save(uuid):
+        return None
+    try:
+        save = await get_save_dict(uuid)
+    except Exception:
+        log.warning("summary: не смог прочитать live-сейв %s", name, exc_info=True)
+        return None
+    return {
+        "name": name,
+        "status": status,
+        "turn": int(save.get("turns") or 0),
+        "currentPlayer": save.get("currentPlayer"),
+        "currentTurnStartTime": int(save.get("currentTurnStartTime") or 0),
+        "mapType": _map_type(save),
+        "players": _roster(save),
+    }
+
+
 @router.get("/active-summary", summary="Cheap roster/turn summary of in-progress games")
 async def active_summary() -> dict:
     """For every non-ended game with a live save: name, map type, current turn,
@@ -58,28 +84,57 @@ async def active_summary() -> dict:
     for name, status in statuses.items():
         if status in _ENDED_STATUSES:
             continue
-        try:
-            folder = _backup_folder(name)
-        except Exception:
-            continue
-        uuid = _resolve_uuid(folder)
-        if not uuid or not _has_live_save(uuid):
-            continue
-        try:
-            save = await get_save_dict(uuid)
-        except Exception:
-            log.warning("active-summary: не смог прочитать live-сейв %s", name, exc_info=True)
-            continue
-        games.append({
-            "name": name,
-            "status": status,
-            "turn": int(save.get("turns") or 0),
-            "currentPlayer": save.get("currentPlayer"),
-            "currentTurnStartTime": int(save.get("currentTurnStartTime") or 0),
-            "mapType": _map_type(save),
-            "players": _roster(save),
-        })
+        g = await _summarize_game(name, status)
+        if g is not None:
+            games.append(g)
     return {"games": games}
+
+
+@router.get("/game-summary/{name}", summary="Сводка одной игры (в т.ч. завершённой)")
+async def game_summary(name: str) -> dict:
+    """Как active-summary, но для одной игры и без фильтра ended (для страницы
+    завершённой игры). Если живого сейва нет — минимальный объект из индекса."""
+    status = _session_statuses().get(name, "ended")
+    g = await _summarize_game(name, status)
+    if g is None:
+        g = {"name": name, "status": status, "turn": 0, "currentPlayer": None,
+             "currentTurnStartTime": 0, "mapType": "—", "players": []}
+    return g
+
+
+@router.post("/purge-game", summary="Удалить файлы игры: сейв, preview, бэкапы, ротация")
+async def purge_game(body: dict = Body(default={})) -> dict:
+    """Стирает сейв/preview (по game_id) и папки бэкапов/ротации (по имени).
+    Гейт на «game*»-имена — на стороне core; здесь только чистая зачистка файлов."""
+    import os
+    import shutil
+
+    name = str(body.get("name") or "").strip().strip("/")
+    game_id = str(body.get("game_id") or "").strip().strip("/")
+    if not name or "/" in name or ".." in name:
+        raise HTTPException(status_code=400, detail="bad name")
+
+    civ = settings.civ_path.rstrip("/")
+    bpath = settings.get_backup_path().rstrip("/")
+    targets: list[tuple[str, str]] = []
+    if game_id and "/" not in game_id and ".." not in game_id:
+        targets.append(("file", os.path.join(civ, game_id)))
+        targets.append(("file", os.path.join(civ, f"{game_id}_Preview")))
+    targets.append(("dir", os.path.join(bpath, name)))
+    targets.append(("dir", os.path.join(bpath, "rotate", name)))
+
+    removed: list[str] = []
+    for kind, path in targets:
+        try:
+            if kind == "file" and os.path.isfile(path):
+                os.remove(path)
+                removed.append(path)
+            elif kind == "dir" and os.path.isdir(path):
+                shutil.rmtree(path)
+                removed.append(path)
+        except OSError:
+            log.exception("purge-game: не удалось удалить %s", path)
+    return {"name": name, "removed": removed}
 
 
 def _version_label(save: dict) -> str:
