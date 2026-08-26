@@ -118,8 +118,12 @@ async def purge_game(body: dict = Body(default={})) -> dict:
     bpath = settings.get_backup_path().rstrip("/")
     targets: list[tuple[str, str]] = []
     if game_id and "/" not in game_id and ".." not in game_id:
-        targets.append(("file", os.path.join(civ, game_id)))
-        targets.append(("file", os.path.join(civ, f"{game_id}_Preview")))
+        # Сейвы лежат в civ/MultiplayerFiles/<id> (+ _Preview); плюс файловые
+        # ротации в MultiplayerFiles_early_turns / _zero_turns.
+        for sub in ("MultiplayerFiles", "MultiplayerFiles_early_turns",
+                    "MultiplayerFiles_zero_turns"):
+            targets.append(("file", os.path.join(civ, sub, game_id)))
+            targets.append(("file", os.path.join(civ, sub, f"{game_id}_Preview")))
     targets.append(("dir", os.path.join(bpath, name)))
     targets.append(("dir", os.path.join(bpath, "rotate", name)))
 
