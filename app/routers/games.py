@@ -896,6 +896,15 @@ _SEA_TRADE_ROUTE_PREFIX = "Sea Trade Route"
 _SKIP_SNAPSHOT_CIVS = frozenset({"Barbarians", "Spectator", "Spectators"})
 
 
+def _to_int(val: str) -> int:
+    """Tolerant int-parse: Unciv may write large numbers in exponent form ('0E83',
+    '1.0E9'), which int() rejects. Parse via float; fall back to 0 on garbage."""
+    try:
+        return int(float(val))
+    except (ValueError, TypeError, OverflowError):
+        return 0
+
+
 def _parse_stats(stats) -> dict:
     """Parse Unciv statsHistory entry (dict or compact string like 'S123W45A67F89')."""
     if isinstance(stats, dict):
@@ -907,13 +916,13 @@ def _parse_stats(stats) -> dict:
     for ch in str(stats):
         if ch in params:
             if key and val:
-                result[key] = int(val)
+                result[key] = _to_int(val)
                 val = ""
             key = ch
         else:
             val += ch
     if key and val:
-        result[key] = int(val)
+        result[key] = _to_int(val)
     return result
 
 
