@@ -896,33 +896,25 @@ _SEA_TRADE_ROUTE_PREFIX = "Sea Trade Route"
 _SKIP_SNAPSHOT_CIVS = frozenset({"Barbarians", "Spectator", "Spectators"})
 
 
-def _to_int(val: str) -> int:
-    """Tolerant int-parse: Unciv may write large numbers in exponent form ('0E83',
-    '1.0E9'), which int() rejects. Parse via float; fall back to 0 on garbage."""
-    try:
-        return int(float(val))
-    except (ValueError, TypeError, OverflowError):
-        return 0
+_STATS_LETTER_RE = re.compile(r"([A-Z])(-?\d+)")
 
 
 def _parse_stats(stats) -> dict:
-    """Parse Unciv statsHistory entry (dict or compact string like 'S123W45A67F89')."""
+    """Parse Unciv statsHistory entry (dict or compact string like 'S123W45A9E918').
+
+    Каждый стат — буква-id RankingType Unciv + целое (может быть отрицательным).
+    Буквы: S score, N population, C growth, P production, G gold, T territory,
+    F force, H happiness, W technologies, A culture, E tilesExplored. Разбор
+    регуляркой, чтобы не терять новые/старые буквы (раньше набор без ``E`` склеивал
+    ``A9E918`` в ``A`` → культура всегда 0)."""
     if isinstance(stats, dict):
         return stats
     result: dict[str, int] = {}
-    params = set("SNCPGTFHWA")
-    key = ""
-    val = ""
-    for ch in str(stats):
-        if ch in params:
-            if key and val:
-                result[key] = _to_int(val)
-                val = ""
-            key = ch
-        else:
-            val += ch
-    if key and val:
-        result[key] = _to_int(val)
+    for letter, raw in _STATS_LETTER_RE.findall(str(stats)):
+        try:
+            result[letter] = int(raw)
+        except ValueError:
+            continue
     return result
 
 
