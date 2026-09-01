@@ -8,6 +8,7 @@
 Эндпоинты только читают файловую систему, ничего не пишут.
 """
 import asyncio
+import functools
 import os
 import tarfile
 from pathlib import Path
@@ -16,6 +17,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from app.config import settings
 from app.game.parser import decode_save
+from app.services import backup_scan
 
 router = APIRouter(prefix="/backups", tags=["backups"])
 
@@ -124,3 +126,32 @@ async def backup_deaths(
     loop = asyncio.get_event_loop()
     deaths = await loop.run_in_executor(None, _count_military_deaths, archives, turn)
     return {"game": folder, "deaths": deaths}
+
+
+@router.get("/{folder}/great-people", summary="Великие люди по бэкапам (без Пророка)")
+async def backup_great_people(
+    folder: str,
+    game_id: str | None = Query(default=None, description="Фильтр по Unciv GAME_ID"),
+):
+    """First-seen Great People counts per nation from the game's backup archives.
+
+    Регистр имени папки сохраняется (``IronLeague-30``). ``base`` — корень
+    бэкапов, сканирование идёт по ``{base}/{folder}`` (+ ``{folder}start``).
+    """
+    folder_clean = folder.strip("/")
+    if not folder_clean or ".." in folder_clean.split("/") or folder_clean in _RESERVED:
+        raise HTTPException(status_code=400, detail="bad folder")
+
+    root = Path(settings.get_backup_path())
+    if not (root / folder_clean).is_dir():
+        raise HTTPException(status_code=404, detail=f"No backup folder: {folder}")
+
+    loop = asyncio.get_event_loop()
+    fn = functools.partial(
+        backup_scan.great_people_from_backups,
+        root,
+        folder_clean,
+        game_id=game_id or "",
+    )
+    counts = await loop.run_in_executor(None, fn)
+    return {"game": folder, "great_people": counts}
