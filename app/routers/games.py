@@ -16,8 +16,11 @@ from app.game.fetcher import (
     get_save_dict, get_preview_dict, list_all_games, get_file_created_at,
     delete_game, patch_prophet, load_spectate_backup, write_save, write_preview,
     create_backup, restore_backup, make_single_player,
+    store_save, store_preview, get_save_raw, get_preview_raw,
+    extract_backup_contents,
 )
 from app.game.parser import decode_save, encode_save
+from app.game import remote
 from app.game.static_data import CITY_STATES
 from app.launchers import get_launcher
 from app.services.map_checker import check_map
@@ -26,6 +29,10 @@ from app.services.task_manager import TaskStatus, create_task, get_start_lock, u
 router = APIRouter(prefix="/games", tags=["games"], responses={404: {"description": "Game not found"}})
 
 _GAME_ID_RE = re.compile(r"^[0-9a-f-]{32,}$", re.IGNORECASE)
+
+# When set, the game lives on an external Unciv server: read/write go through its
+# REST API (GET/PUT <host>/files/<id>) instead of the local MultiplayerFiles mount.
+_HOST_DESC = "External Unciv host; when set, use its API instead of local files"
 
 
 def _validate_game_id(game_id: str) -> None:
@@ -70,10 +77,11 @@ async def list_games():
 )
 async def game_info(
     game_id: str,
+    host: str | None = Query(default=None, description=_HOST_DESC),
 ):
     _validate_game_id(game_id)
     try:
-        save = await get_save_dict(game_id)
+        save = await get_save_dict(game_id, host)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -123,10 +131,11 @@ async def map_check(
     max_distance: int | None = Query(default=None, description="Override maximum distance between start positions"),
     min_luxuries: int | None = Query(default=None, description="Override minimum total luxuries in radius"),
     min_unique_luxuries: int | None = Query(default=None, description="Override minimum unique luxury types"),
+    host: str | None = Query(default=None, description=_HOST_DESC),
 ):
     _validate_game_id(game_id)
     try:
-        save = await get_save_dict(game_id)
+        save = await get_save_dict(game_id, host)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     result = check_map(
@@ -148,9 +157,12 @@ async def map_check(
     summary="Delete game files",
     description="Deletes the main save file and preview file for the given game_id.",
 )
-async def delete_game_files(game_id: str):
+async def delete_game_files(game_id: str,
+                            host: str | None = Query(default=None, description=_HOST_DESC)):
     _validate_game_id(game_id)
-    result = delete_game(game_id)
+    result = delete_game(game_id, host)
+    if host:
+        return result  # external: deletion is a no-op (skipped_external), never 404
     if not result["deleted_main"] and not result["deleted_preview"]:
         raise HTTPException(status_code=404, detail=f"No files found for game_id: {game_id}")
     return result
@@ -211,10 +223,11 @@ def _extract_capitals(save: dict) -> dict:
 )
 async def game_capitals(
     game_id: str,
+    host: str | None = Query(default=None, description=_HOST_DESC),
 ):
     _validate_game_id(game_id)
     try:
-        save = await get_save_dict(game_id)
+        save = await get_save_dict(game_id, host)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     return {"game_id": game_id, "capitals": _extract_capitals(save)}
@@ -267,10 +280,11 @@ def _extract_units(save: dict) -> list:
 async def game_units(
     game_id: str,
     owner: str | None = Query(default=None, description="Filter by civ name"),
+    host: str | None = Query(default=None, description=_HOST_DESC),
 ):
     _validate_game_id(game_id)
     try:
-        save = await get_save_dict(game_id)
+        save = await get_save_dict(game_id, host)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     units = _extract_units(save)
@@ -322,10 +336,11 @@ def _extract_cities(save: dict, nation: str | None = None) -> list:
 async def game_cities(
     game_id: str,
     nation: str | None = Query(default=None, description="Filter by civ name"),
+    host: str | None = Query(default=None, description=_HOST_DESC),
 ):
     _validate_game_id(game_id)
     try:
-        save = await get_save_dict(game_id)
+        save = await get_save_dict(game_id, host)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     cities = _extract_cities(save, nation)
@@ -382,10 +397,11 @@ def _extract_diplomacy(save: dict) -> list:
 )
 async def game_diplomacy(
     game_id: str,
+    host: str | None = Query(default=None, description=_HOST_DESC),
 ):
     _validate_game_id(game_id)
     try:
-        save = await get_save_dict(game_id)
+        save = await get_save_dict(game_id, host)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     relations = _extract_diplomacy(save)
@@ -428,10 +444,11 @@ def _extract_techs(save: dict) -> dict:
 )
 async def game_techs(
     game_id: str,
+    host: str | None = Query(default=None, description=_HOST_DESC),
 ):
     _validate_game_id(game_id)
     try:
-        save = await get_save_dict(game_id)
+        save = await get_save_dict(game_id, host)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     return {"game_id": game_id, "civs": _extract_techs(save)}
@@ -444,6 +461,7 @@ async def game_techs(
 class ProphetPatchRequest(BaseModel):
     nation: str
     value: int
+    host: str | None = None
 
 
 @router.post(
@@ -458,13 +476,32 @@ class ProphetPatchRequest(BaseModel):
 )
 async def patch_game_prophet(game_id: str, body: ProphetPatchRequest):
     _validate_game_id(game_id)
-    loop = asyncio.get_event_loop()
+    if not body.host:
+        # Local fast path: read-patch-write on disk in one executor call.
+        loop = asyncio.get_event_loop()
+        try:
+            await loop.run_in_executor(None, patch_prophet, game_id, body.nation, body.value)
+        except FileNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        return {"ok": True, "game_id": game_id, "nation": body.nation, "value": body.value}
+    # External: fetch, patch in memory, PUT back.
     try:
-        await loop.run_in_executor(None, patch_prophet, game_id, body.nation, body.value)
+        save = await get_save_dict(game_id, body.host)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+    patched = False
+    for civ in save.get("civilizations", []):
+        if civ.get("civName") == body.nation:
+            constructions = civ.setdefault("civConstructions", {})
+            bought = constructions.setdefault("boughtItemsWithIncreasingPrice", {})
+            bought["Great Prophet"] = body.value
+            patched = True
+            break
+    if not patched:
+        raise HTTPException(status_code=422, detail=f"Nation not found in save: {body.nation}")
+    await store_save(game_id, encode_save(save), host=body.host)
     return {"ok": True, "game_id": game_id, "nation": body.nation, "value": body.value}
 
 
@@ -478,6 +515,7 @@ class BackupRequest(BaseModel):
     nation: str | None = None
     max_keep: int = 30
     offsite: bool = False  # дополнительно отправить архив на второй сервер (neth)
+    host: str | None = None  # внешний хост: содержимое тянем через API, архив — локально
 
 
 async def _send_offsite(archive_path: str, game: str | None = None) -> bool:
@@ -522,10 +560,20 @@ async def create_game_backup(game_id: str, body: BackupRequest):
     if body.subdirectory:
         backup_dir = f"{backup_dir}/{body.subdirectory}"
     loop = asyncio.get_event_loop()
+    # Внешний хост: файлы игры не лежат локально — тянем их через API и архивируем
+    # уже переданное содержимое (бэкапы всегда храним у себя).
+    save_text = preview_text = None
+    if body.host:
+        try:
+            save_text = await get_save_raw(game_id, body.host)
+            preview_text = await get_preview_raw(game_id, body.host)
+        except FileNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e))
     try:
         name = await loop.run_in_executor(None, lambda: create_backup(
             game_id, backup_dir=backup_dir, turn=body.turn,
-            nation=body.nation, max_keep=body.max_keep))
+            nation=body.nation, max_keep=body.max_keep,
+            save_text=save_text, preview_text=preview_text))
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     offsite_ok = False
@@ -565,12 +613,23 @@ def _normalize_to_encoded(raw: bytes) -> str:
     return text
 
 
-async def _safety_backup(game_id: str) -> None:
-    """Best-effort бэкап перед перезаписью (как backup=True в монолите)."""
+async def _safety_backup(game_id: str, *, host: str | None = None) -> None:
+    """Best-effort бэкап перед перезаписью (как backup=True в монолите).
+
+    Внешний хост → содержимое тянем через API и архивируем локально (бэкапы всегда
+    храним у себя). Локально файла может ещё не быть (первая заливка) — тогда no-op.
+    """
     loop = asyncio.get_event_loop()
     try:
-        await loop.run_in_executor(None, lambda: create_backup(
-            game_id, backup_dir=settings.get_backup_path(), max_keep=30))
+        if host:
+            save_text = await get_save_raw(game_id, host)
+            preview_text = await get_preview_raw(game_id, host)
+            await loop.run_in_executor(None, lambda: create_backup(
+                game_id, backup_dir=settings.get_backup_path(), max_keep=30,
+                save_text=save_text, preview_text=preview_text))
+        else:
+            await loop.run_in_executor(None, lambda: create_backup(
+                game_id, backup_dir=settings.get_backup_path(), max_keep=30))
     except FileNotFoundError:
         pass  # файла ещё нет (первая заливка) — бэкапить нечего
     except Exception:
@@ -588,14 +647,18 @@ async def _safety_backup(game_id: str) -> None:
     ),
 )
 async def upload_game_save(game_id: str, request: Request,
-                           backup: bool = Query(True)):
+                           backup: bool = Query(True),
+                           host: str | None = Query(default=None, description=_HOST_DESC),
+                           uid: str | None = Query(default=None,
+                               description="Basic-auth userId for external PUT (e.g. Spectator id)"),
+                           password: str | None = Query(default=None,
+                               description="Basic-auth password for external PUT")):
     _validate_game_id(game_id)
     raw = await request.body()
     encoded = _normalize_to_encoded(raw)
     if backup:
-        await _safety_backup(game_id)
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, write_save, game_id, encoded)
+        await _safety_backup(game_id, host=host)
+    await store_save(game_id, encoded, host=host, uid=uid, password=password)
     return {"ok": True, "game_id": game_id, "bytes": len(encoded)}
 
 
@@ -607,12 +670,16 @@ async def upload_game_save(game_id: str, request: Request,
         "закодированный текст. Атомарная запись в MultiplayerFiles/{game_id}_Preview."
     ),
 )
-async def upload_game_preview(game_id: str, request: Request):
+async def upload_game_preview(game_id: str, request: Request,
+                              host: str | None = Query(default=None, description=_HOST_DESC),
+                              uid: str | None = Query(default=None,
+                                  description="Basic-auth userId for external PUT (e.g. Spectator id)"),
+                              password: str | None = Query(default=None,
+                                  description="Basic-auth password for external PUT")):
     _validate_game_id(game_id)
     raw = await request.body()
     encoded = _normalize_to_encoded(raw)
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, write_preview, game_id, encoded)
+    await store_preview(game_id, encoded, host=host, uid=uid, password=password)
     return {"ok": True, "game_id": game_id, "bytes": len(encoded)}
 
 
@@ -666,6 +733,9 @@ class RestoreRequest(BaseModel):
     backup_name: str
     subdirectory: str | None = None
     safety_backup: bool = True
+    host: str | None = None       # внешний хост: заливаем PUT'ом, не пишем локально
+    uid: str | None = None        # логин для PUT на внешний хост (id спектатора)
+    password: str | None = None
 
 
 @router.post(
@@ -694,12 +764,33 @@ async def restore_game(game_id: str, body: RestoreRequest):
         raise HTTPException(status_code=404, detail=f"Backup not found: {backup_file}")
 
     loop = asyncio.get_event_loop()
+    if not body.host:
+        try:
+            result = await loop.run_in_executor(
+                None, lambda: restore_backup(
+                    backup_file, game_id, safety_backup=body.safety_backup))
+        except (ValueError, tarfile.TarError) as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        return {"ok": True, "game_id": game_id, **result}
+
+    # Внешний хост: содержимое архива заливаем PUT'ом на сервер, локально не пишем
+    # (удалять/писать в чужой MultiplayerFiles нельзя). Safety-бэкап текущего
+    # состояния снимаем как обычно (тянется через API).
     try:
-        result = await loop.run_in_executor(
-            None, lambda: restore_backup(
-                backup_file, game_id, safety_backup=body.safety_backup))
+        contents = await loop.run_in_executor(
+            None, lambda: extract_backup_contents(backup_file))
     except (ValueError, tarfile.TarError) as e:
         raise HTTPException(status_code=422, detail=str(e))
+    if body.safety_backup:
+        await _safety_backup(game_id, host=body.host)
+    result = {"save": False, "preview": False}
+    await store_save(game_id, contents["save_text"], host=body.host,
+                     uid=body.uid, password=body.password)
+    result["save"] = True
+    if contents.get("preview_text"):
+        await store_preview(game_id, contents["preview_text"], host=body.host,
+                            uid=body.uid, password=body.password)
+        result["preview"] = True
     return {"ok": True, "game_id": game_id, **result}
 
 
@@ -709,6 +800,7 @@ async def restore_game(game_id: str, body: RestoreRequest):
 
 class SingleRequest(BaseModel):
     nations: list[str] = []
+    host: str | None = None
 
 
 @router.post(
@@ -725,7 +817,7 @@ class SingleRequest(BaseModel):
 async def game_single(game_id: str, body: SingleRequest):
     _validate_game_id(game_id)
     try:
-        save = await get_save_dict(game_id)
+        save = await get_save_dict(game_id, body.host)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     try:
@@ -741,10 +833,11 @@ async def game_single(game_id: str, body: SingleRequest):
 # ---------------------------------------------------------------------------
 
 @router.get("/{game_id}/preview", summary="Parsed preview file (lightweight metadata)")
-async def game_preview(game_id: str):
+async def game_preview(game_id: str,
+                       host: str | None = Query(default=None, description=_HOST_DESC)):
     _validate_game_id(game_id)
     try:
-        return await get_preview_dict(game_id)
+        return await get_preview_dict(game_id, host)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -1015,10 +1108,11 @@ def _extract_snapshot(save: dict) -> dict:
 )
 async def game_snapshot(
     game_id: str,
+    host: str | None = Query(default=None, description=_HOST_DESC),
 ):
     _validate_game_id(game_id)
     try:
-        save = await get_save_dict(game_id)
+        save = await get_save_dict(game_id, host)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     data = _extract_snapshot(save)
@@ -1116,10 +1210,11 @@ def _compute_veto(save: dict) -> dict:
 )
 async def game_veto(
     game_id: str,
+    host: str | None = Query(default=None, description=_HOST_DESC),
 ):
     _validate_game_id(game_id)
     try:
-        save = await get_save_dict(game_id)
+        save = await get_save_dict(game_id, host)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     result = _compute_veto(save)
@@ -1131,42 +1226,44 @@ async def game_veto(
 # ---------------------------------------------------------------------------
 
 @router.get("/{game_id}/save-raw", summary="Decoded main save file (for admin download)")
-async def game_save_raw(game_id: str):
+async def game_save_raw(game_id: str,
+                        host: str | None = Query(default=None, description=_HOST_DESC)):
     _validate_game_id(game_id)
     try:
-        return await get_save_dict(game_id)
+        return await get_save_dict(game_id, host)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
 
 class PatchSpeedRequest(BaseModel):
     speed: str
+    host: str | None = None
 
 
 @router.post("/{game_id}/patch-speed", summary="Patch gameParameters.speed in save and preview")
 async def patch_speed(game_id: str, body: PatchSpeedRequest):
     _validate_game_id(game_id)
-    loop = asyncio.get_event_loop()
     try:
-        save = await get_save_dict(game_id)
+        save = await get_save_dict(game_id, body.host)
         save.setdefault("gameParameters", {})["speed"] = body.speed
-        await loop.run_in_executor(None, write_save, game_id, encode_save(save))
+        await store_save(game_id, encode_save(save), host=body.host)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     try:
-        preview = await get_preview_dict(game_id)
+        preview = await get_preview_dict(game_id, body.host)
         preview.setdefault("gameParameters", {})["speed"] = body.speed
-        await loop.run_in_executor(None, write_preview, game_id, encode_save(preview))
+        await store_preview(game_id, encode_save(preview), host=body.host)
     except Exception:
         pass
     return {"ok": True, "speed": body.speed}
 
 
 @router.get("/{game_id}/prophet", summary="Great Prophet purchase counts per nation")
-async def get_prophet(game_id: str):
+async def get_prophet(game_id: str,
+                      host: str | None = Query(default=None, description=_HOST_DESC)):
     _validate_game_id(game_id)
     try:
-        save = await get_save_dict(game_id)
+        save = await get_save_dict(game_id, host)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     counts = {}

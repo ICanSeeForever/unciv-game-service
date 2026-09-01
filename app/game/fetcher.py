@@ -19,6 +19,7 @@ def _fmt_ts(ts: float) -> str:
 
 from app.config import settings
 from app.game.parser import decode_save
+from app.game import remote
 
 # ---------------------------------------------------------------------------
 # File birth time via statx (Linux kernel ≥4.11, Python has no built-in)
@@ -69,14 +70,20 @@ def _preview_path(game_id: str) -> Path:
     return Path(settings.civ_path) / "MultiplayerFiles" / f"{game_id}_Preview"
 
 
-async def get_save_dict(game_id: str) -> dict:
+async def get_save_dict(game_id: str, host: str | None = None) -> dict:
+    """Decoded save. ``host`` set → read via GET <host>/files/<id> (external game)."""
+    if host:
+        return decode_save(await remote.fetch_file(host, game_id))
     path = _local_path(game_id)
     if not path.is_file():
         raise FileNotFoundError(f"Game file not found: {game_id}")
     return decode_save(path.read_text(encoding="utf-8").strip())
 
 
-async def get_preview_dict(game_id: str) -> dict:
+async def get_preview_dict(game_id: str, host: str | None = None) -> dict:
+    """Decoded preview. ``host`` set → read via GET <host>/files/<id>_Preview."""
+    if host:
+        return decode_save(await remote.fetch_file(host, f"{game_id}_Preview"))
     path = _preview_path(game_id)
     if not path.is_file():
         raise FileNotFoundError(f"Preview file not found: {game_id}_Preview")
@@ -84,19 +91,81 @@ async def get_preview_dict(game_id: str) -> dict:
     return decode_save(raw.strip())
 
 
+async def get_save_raw(game_id: str, host: str | None = None) -> str:
+    """Raw on-disk save text (base64+gzip). ``host`` set → GET from external server."""
+    if host:
+        return await remote.fetch_file(host, game_id)
+    path = _local_path(game_id)
+    if not path.is_file():
+        raise FileNotFoundError(f"Game file not found: {game_id}")
+    return path.read_text(encoding="utf-8").strip()
+
+
+async def get_preview_raw(game_id: str, host: str | None = None) -> str | None:
+    """Raw preview text, or None if absent. ``host`` set → GET from external."""
+    if host:
+        try:
+            return await remote.fetch_file(host, f"{game_id}_Preview")
+        except Exception:
+            return None
+    path = _preview_path(game_id)
+    if not path.is_file():
+        return None
+    return path.read_text(encoding="utf-8").strip()
+
+
+async def store_save(game_id: str, encoded: str, *, host: str | None = None,
+                     uid: str | None = None, password: str | None = None) -> None:
+    """Persist an encoded save. ``host`` set → PUT to external; else local write."""
+    if host:
+        await remote.put_file(host, game_id, encoded, uid=uid, password=password)
+        return
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, write_save, game_id, encoded)
+
+
+async def store_preview(game_id: str, encoded: str, *, host: str | None = None,
+                        uid: str | None = None, password: str | None = None) -> None:
+    """Persist an encoded preview. ``host`` set → PUT to external; else local write."""
+    if host:
+        await remote.put_file(host, f"{game_id}_Preview", encoded,
+                              uid=uid, password=password)
+        return
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, write_preview, game_id, encoded)
+
+
+def _tar_add_text(tar: tarfile.TarFile, arcname: str, text: str) -> None:
+    """Add an in-memory text file to an open tar (for backups built from remote data)."""
+    import io
+    data = text.encode("utf-8")
+    info = tarfile.TarInfo(name=arcname)
+    info.size = len(data)
+    info.mtime = int(datetime.now().timestamp())
+    tar.addfile(info, io.BytesIO(data))
+
+
 def create_backup(game_id: str, *, backup_dir: str, turn=None,
-                  nation: str | None = None, max_keep: int = 30) -> str:
+                  nation: str | None = None, max_keep: int = 30,
+                  save_text: str | None = None,
+                  preview_text: str | None = None) -> str:
     """Tar the save (+ preview) into ``backup_dir`` as ``{turn}_{nation}_{ts}.tar.gz``.
 
     Spectate-совместимый архив: сам сейв под arcname = game_id (в имени есть дефис),
     preview под ``{game_id}_Preview`` — ровно то, что ищет ``load_spectate_backup``.
     Ротация: в каталоге остаётся не более ``max_keep`` свежих архивов. Возвращает
     имя созданного файла.
+
+    ``save_text``/``preview_text`` заданы (внешний хост: файлы не лежат локально) →
+    архив собирается из переданного содержимого, а не из MultiplayerFiles.
     """
-    save = _local_path(game_id)
-    if not save.is_file():
-        raise FileNotFoundError(f"Game file not found: {game_id}")
-    preview = _preview_path(game_id)
+    if save_text is None:
+        save = _local_path(game_id)
+        if not save.is_file():
+            raise FileNotFoundError(f"Game file not found: {game_id}")
+        save_text = save.read_text(encoding="utf-8")
+        preview = _preview_path(game_id)
+        preview_text = preview.read_text(encoding="utf-8") if preview.is_file() else None
     bdir = Path(backup_dir)
     bdir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -104,9 +173,9 @@ def create_backup(game_id: str, *, backup_dir: str, turn=None,
     name = f"{prefix}{ts}.tar.gz"
     archive = bdir / name
     with tarfile.open(archive, "w:gz") as tar:
-        tar.add(save, arcname=game_id)
-        if preview.is_file():
-            tar.add(preview, arcname=f"{game_id}_Preview")
+        _tar_add_text(tar, game_id, save_text)
+        if preview_text is not None:
+            _tar_add_text(tar, f"{game_id}_Preview", preview_text)
     if max_keep and max_keep > 0:
         files = sorted(
             [p for p in bdir.iterdir() if p.is_file() and p.name.endswith(".tar.gz")],
@@ -174,6 +243,34 @@ def restore_backup(backup_file: Path, target_game_id: str, *,
     if not restored["save"]:
         raise ValueError("no save file in backup archive")
     return restored
+
+
+def extract_backup_contents(backup_file: Path) -> dict[str, str | None]:
+    """Read save (+preview) text out of a ``.tar.gz`` backup without writing to disk.
+
+    Returns ``{"save_text": str, "preview_text": str | None}``. Used to push a backup
+    to an external host (PUT) instead of restoring it into local MultiplayerFiles.
+    """
+    if not backup_file.is_file():
+        raise FileNotFoundError(f"Backup not found: {backup_file}")
+    save_text: str | None = None
+    preview_text: str | None = None
+    with tarfile.open(backup_file, "r:gz") as tar:
+        for member in tar.getmembers():
+            if not member.isfile():
+                continue
+            extracted = tar.extractfile(member)
+            if extracted is None:
+                continue
+            content = extracted.read().decode("utf-8")
+            base = os.path.basename(member.name)
+            if base.endswith("_Preview"):
+                preview_text = content
+            else:
+                save_text = content
+    if save_text is None:
+        raise ValueError("no save file in backup archive")
+    return {"save_text": save_text, "preview_text": preview_text}
 
 
 def make_single_player(save: dict, nations: list[str]) -> dict:
@@ -329,8 +426,14 @@ def load_spectate_backup(backup_file: Path, target_game_id: str) -> str:
     return spec_id
 
 
-def delete_game(game_id: str) -> dict[str, bool]:
-    """Delete main save file and preview file. Returns which files were deleted."""
+def delete_game(game_id: str, host: str | None = None) -> dict[str, bool]:
+    """Delete main save file and preview file. Returns which files were deleted.
+
+    ``host`` set (external game) → no-op: we cannot delete files on a server we only
+    reach through the read/write API. Returns a skipped marker.
+    """
+    if host:
+        return {"deleted_main": False, "deleted_preview": False, "skipped_external": True}
     main = _local_path(game_id)
     preview = _preview_path(game_id)
     deleted_main = main.is_file()
