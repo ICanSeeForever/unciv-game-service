@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, HTTPException, Query
 
 from app.config import settings
 from app.game.fetcher import get_save_dict
@@ -22,6 +22,8 @@ from app.routers.spectator import (
 
 router = APIRouter(prefix="/internal", tags=["internal"])
 log = logging.getLogger(__name__)
+
+_HOST_DESC = "External Unciv host; when set, read the game via its API not local files"
 
 
 def _map_type(save: dict) -> str:
@@ -50,17 +52,24 @@ def _roster(save: dict) -> list[dict]:
     return out
 
 
-async def _summarize_game(name: str, status: str) -> dict | None:
-    """Сводка одной игры из живого сейва (roster/turn/map). None если сейва нет."""
+async def _summarize_game(name: str, status: str, host: str | None = None) -> dict | None:
+    """Сводка одной игры из живого сейва (roster/turn/map). None если сейва нет.
+
+    ``host`` задан (внешняя игра) → сейв тянем через API этого хоста, а не из
+    локальных MultiplayerFiles (их для external у нас нет). UUID берём из локального
+    бэкапа (бэкапы всегда храним у себя)."""
     try:
         folder = _backup_folder(name)
     except Exception:
         return None
     uuid = _resolve_uuid(folder)
-    if not uuid or not _has_live_save(uuid):
+    if not uuid:
+        return None
+    # Локальный live-сейв обязателен только для наших игр; у external его нет.
+    if not host and not _has_live_save(uuid):
         return None
     try:
-        save = await get_save_dict(uuid)
+        save = await get_save_dict(uuid, host)
     except Exception:
         log.warning("summary: не смог прочитать live-сейв %s", name, exc_info=True)
         return None
@@ -91,11 +100,15 @@ async def active_summary() -> dict:
 
 
 @router.get("/game-summary/{name}", summary="Сводка одной игры (в т.ч. завершённой)")
-async def game_summary(name: str) -> dict:
+async def game_summary(
+    name: str,
+    host: str | None = Query(default=None, description=_HOST_DESC),
+) -> dict:
     """Как active-summary, но для одной игры и без фильтра ended (для страницы
-    завершённой игры). Если живого сейва нет — минимальный объект из индекса."""
+    завершённой игры). ``host`` задан → сейв читаем с внешнего хоста (external-игра).
+    Если живого сейва нет — минимальный объект из индекса."""
     status = _session_statuses().get(name, "ended")
-    g = await _summarize_game(name, status)
+    g = await _summarize_game(name, status, host)
     if g is None:
         g = {"name": name, "status": status, "turn": 0, "currentPlayer": None,
              "currentTurnStartTime": 0, "mapType": "—", "players": []}

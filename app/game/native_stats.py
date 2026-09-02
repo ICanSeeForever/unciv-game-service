@@ -44,6 +44,7 @@ _CP = f"{_JAR}:{_ENGINE_DIR}"
 
 _prep_lock = threading.Lock()
 _ready: bool | None = None  # None = not yet attempted
+_jar_sig: tuple | None = None  # (mtime, size) of the jar the engine was built against
 
 _cache: dict[str, dict] = {}
 _CACHE_MAX = 512
@@ -63,6 +64,47 @@ _daemon: subprocess.Popen | None = None
 _daemon_q: "queue.Queue[str | None]" | None = None
 _DAEMON_READY_TIMEOUT = 60.0   # ruleset load + first JIT
 _DAEMON_CALL_TIMEOUT = 45.0    # per-save compute (cold first call is the slow one)
+
+
+def _current_jar_sig() -> tuple | None:
+    """(mtime, size) of the Unciv.jar, or None if it's missing."""
+    try:
+        st = Path(_JAR).stat()
+        return (int(st.st_mtime), st.st_size)
+    except OSError:
+        return None
+
+
+def _invalidate_if_jar_changed() -> None:
+    """Rebuild the engine when the Unciv.jar is swapped under us (a redeploy replaces
+    the bind-mounted jar in place, without recreating the container).
+
+    The resident warm daemon is a long-lived JVM: once the jar changes, classes it
+    loads afterwards mismatch the ones already resident and fail with
+    "Could not initialize class …", so every stats call silently returns nothing.
+    On a detected change we reset prep state, wipe the compiled wrappers + extracted
+    rulesets, kill the stale daemon, and clear the cache — the next call rebuilds and
+    reboots cleanly against the new jar. Cost on the hot path is one ``stat()``.
+    """
+    global _ready, _jar_sig
+    sig = _current_jar_sig()
+    if sig is None or sig == _jar_sig:
+        return
+    with _prep_lock:
+        if sig == _jar_sig:  # another thread already handled it
+            return
+        if _jar_sig is not None:  # not the first run → the jar actually changed
+            logger.warning("native stats: Unciv.jar changed %s -> %s; rebuilding engine",
+                            _jar_sig, sig)
+            with _daemon_lock:
+                _kill_daemon()
+            _cache.clear()
+            try:
+                shutil.rmtree(_ENGINE_DIR)
+            except OSError:
+                pass
+            _ready = None
+        _jar_sig = sig
 
 
 def _prepare() -> bool:
@@ -249,6 +291,7 @@ def compute_income_native(save_string: str) -> dict | None:
     """Return {civName: {gold, science, culture, faith, happiness}} via the native
     engine, or None if unavailable/failed. `save_string` is the raw Unciv save
     (base64+gzip). Cached by save hash; warm daemon first, one-shot as fallback."""
+    _invalidate_if_jar_changed()
     if not save_string or not _prepare():
         return None
     key = hashlib.sha1(save_string.encode("utf-8")).hexdigest()
