@@ -340,8 +340,13 @@ async def list_all_games(exclude_civs: frozenset[str]) -> list[dict]:
     return [r for r in results if r is not None]
 
 
-def get_file_created_at(game_id: str) -> str:
-    """Return filesystem creation time for a game file as UTC+3 string."""
+def get_file_created_at(game_id: str) -> str | None:
+    """Return filesystem creation time for a game file as UTC+3 string, or None when
+    there is no local file. External games live on a remote host — their save is never
+    in MultiplayerFiles, so ``stat()`` would raise; None keeps ``/info`` (the polling
+    endpoint the turn-tracker hits) working for them instead of 500-ing."""
+    if not _local_path(game_id).exists():
+        return None
     return _fmt_ts(_file_created_at(_local_path(game_id)))
 
 
