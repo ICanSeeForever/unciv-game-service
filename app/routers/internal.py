@@ -201,17 +201,21 @@ async def game_meta(name: str) -> dict:
 
 
 @router.get("/score/{name}", summary="Актуальный счёт активной игры (движок, по клику)")
-async def score(name: str) -> dict:
+async def score(
+    name: str,
+    host: str | None = Query(default=None, description=_HOST_DESC),
+) -> dict:
     """Ленивый расчёт счёта (getStatForRanking → Score) движком для live-сейва.
-    Тяжёлый путь — зовётся только по кнопке на карточке главной."""
+    Тяжёлый путь — зовётся только по кнопке на карточке главной. ``host`` задан
+    (external) → сейв тянем с внешнего хоста (локального файла у нас нет)."""
     try:
         folder = _backup_folder(name)
     except Exception:
         raise HTTPException(status_code=404, detail="game not found")
     uuid = _resolve_uuid(folder)
-    if not uuid or not _has_live_save(uuid):
+    if not uuid or (not host and not _has_live_save(uuid)):
         raise HTTPException(status_code=404, detail="no live save")
-    save = await get_save_dict(uuid)
+    save = await get_save_dict(uuid, host)
     # только нации-игроки (люди), как в списке на карточке — без городов-государств
     human = {p["nation"] for p in _roster(save)}
     income = compute_income_native(encode_save(save)) or {}
