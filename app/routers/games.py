@@ -1060,6 +1060,9 @@ def _extract_snapshot(save: dict) -> dict:
                     "owner": name,
                     "city_name": str(city.get("name") or ""),
                     "buildings": list(built) if built else [],
+                    "founding_civ": str(city.get("foundingCiv") or ""),
+                    "is_being_razed": bool(city.get("isBeingRazed")),
+                    "is_original_capital": bool(city.get("isOriginalCapital")),
                 })
 
     units = _extract_units(save)
