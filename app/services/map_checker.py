@@ -91,10 +91,27 @@ def check_map(
     world_wrap = tile_map_params.get("worldWrap", False)
     map_width = tile_map_params.get("mapSize", {}).get("width", 0) if world_wrap else 0
 
-    game_nations = [
-        civ["civName"] for civ in file_dict.get("civilizations", [])
-        if civ["civName"] not in city_states
+    # Проверяем стартовые позиции ТОЛЬКО реальных игроков-людей. Их берём из
+    # gameParameters.players (там явный chosenCiv лишь у человеко-слотов) —
+    # это независимо от рулсета и не тащит города-государства. Хардкод-список
+    # CITY_STATES заточен под RekMOD: для G&K его города-государства (напр.
+    # Bratislava) в нём отсутствуют и раньше ошибочно считались игроками,
+    # раздувая порог суши (165×N) и попадая в проверку люксов.
+    gp_players = (file_dict.get("gameParameters") or {}).get("players") or []
+    human_civs = [
+        p.get("chosenCiv") for p in gp_players
+        if p.get("playerType") == "Human"
+        and p.get("chosenCiv")
+        and p.get("chosenCiv") not in ("Spectator", "Random")
     ]
+    if human_civs:
+        game_nations = human_civs
+    else:
+        # Фолбэк (нет players в сейве): прежнее поведение по хардкод-списку.
+        game_nations = [
+            civ["civName"] for civ in file_dict.get("civilizations", [])
+            if civ["civName"] not in city_states
+        ]
 
     # Find start positions: palace/special building → settler/pioneer unit
     nations: dict[str, dict] = {}
