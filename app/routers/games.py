@@ -853,6 +853,9 @@ class StartGameRequest(BaseModel):
     noupdate: bool = False
     jar_url: str | None = None
     mod_git_url: str | None = None
+    # Встроенный базовый ruleset (напр. «Civ V - Gods & Kings»), который надо
+    # выложить из jar как мод (иначе форк грузит его без speeds → краш).
+    builtin_ruleset: str | None = None
     # Пороги проверки карты (None → дефолты game-service settings.expect_*).
     min_distance: int | None = None
     max_distance: int | None = None
@@ -901,6 +904,22 @@ async def _run_start_game(task, body: StartGameRequest) -> None:
                 task.add_log("✅ Мод обновлён.")
             except Exception as e:
                 await update_task(task, status=TaskStatus.failed, error=f"Ошибка обновления мода: {e}")
+                return
+        elif body.builtin_ruleset:
+            task.add_log(f"⬇️ Подготовка рулсета «{body.builtin_ruleset}»...")
+            try:
+                await launcher.materialize_builtin_ruleset(body.builtin_ruleset)
+                # ruleset должен участвовать как мод в обеих секциях, иначе форк
+                # грузит его без speeds.
+                for _sec in ("gameParameters", "mapParameters"):
+                    sec = config.setdefault(_sec, {})
+                    mods = list(sec.get("mods") or [])
+                    if body.builtin_ruleset not in mods:
+                        mods.append(body.builtin_ruleset)
+                    sec["mods"] = mods
+                task.add_log("✅ Рулсет подготовлен.")
+            except Exception as e:
+                await update_task(task, status=TaskStatus.failed, error=f"Ошибка подготовки рулсета: {e}")
                 return
 
         if not body.noupdate and body.jar_url:

@@ -42,12 +42,12 @@ class LocalGameLauncher(GameLauncher):
         mod_name = repo_name.replace("-", " ")
 
         mods_dir = Path(settings.unciv_jar_path).parent / "mods"
-        mod_dir = mods_dir / mod_name
-
-        if mod_dir.exists():
-            shutil.rmtree(mod_dir)
-
+        # Полностью чистим mods: в игре ровно один рулсет-мод, чтобы рулсеты от
+        # прошлых игр (в т.ч. другого типа — G&K) не подмешивались.
+        if mods_dir.exists():
+            shutil.rmtree(mods_dir)
         mods_dir.mkdir(parents=True, exist_ok=True)
+        mod_dir = mods_dir / mod_name
         proc = await asyncio.create_subprocess_exec(
             "git", "clone", "--branch", branch, "--depth", "1",
             repo_url, str(mod_dir),
@@ -58,6 +58,31 @@ class LocalGameLauncher(GameLauncher):
         print(f"Mod clone ({mod_name}): {stdout.decode('utf-8', errors='replace').strip()}")
         if proc.returncode != 0:
             raise RuntimeError(f"git clone failed:\n{stdout.decode('utf-8', errors='replace')}")
+
+    async def materialize_builtin_ruleset(self, ruleset_name: str) -> None:
+        """Выложить встроенный в Unciv.jar базовый ruleset (напр. «Civ V - Gods &
+        Kings») как мод в mods/<name>/jsons.
+
+        Форк-джарка грузит встроенные базовые рулсеты БЕЗ speeds (падает на
+        ``ruleset.speeds.first()``), а рулсеты-моды — со скоростями. Поэтому для
+        не-git рулсета достаём его же jsons прямо из jar и кладём как мод.
+        """
+        mods_dir = Path(settings.unciv_jar_path).parent / "mods"
+        if mods_dir.exists():
+            shutil.rmtree(mods_dir)
+        dst = mods_dir / ruleset_name / "jsons"
+        dst.mkdir(parents=True, exist_ok=True)
+        prefix = f"jsons/{ruleset_name}/"
+        count = 0
+        with zipfile.ZipFile(settings.unciv_jar_path) as z:
+            for entry in z.namelist():
+                if entry.startswith(prefix) and entry.endswith(".json"):
+                    (dst / os.path.basename(entry)).write_bytes(z.read(entry))
+                    count += 1
+        if count == 0:
+            raise RuntimeError(
+                f"builtin ruleset '{ruleset_name}' not found in Unciv.jar")
+        print(f"Materialized builtin ruleset '{ruleset_name}': {count} json files")
 
     async def launch(self, config: dict) -> str:
         cfg_path = self._write_config_tmp(config)
