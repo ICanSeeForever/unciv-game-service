@@ -119,12 +119,16 @@ async def put_file(host: str, file_name: str, raw: str, *,
     last_exc: Exception | None = None
 
     # Транспорты для заливки: каждый настроенный прокси по порядку, затем прямой
-    # (proxy=None) как последний резерв. Прокси-фейл на уровне соединения (лёг/
-    # таймаут) → переходим к следующему; смена egress-IP может дать иной вердикт WAF.
+    # (proxy=None) как последний резерв (для мелкого тела, если все прокси легли).
     transports: list[str | None] = list(_UPLOAD_PROXIES)
     transports.append(None)
 
+    # К следующему транспорту переходим ТОЛЬКО если текущий не достучался до origin
+    # (прокси лёг/таймаут). Если origin ответил, но отверг ВСЕ креды (4xx) — это
+    # окончательный вердикт авторизации, одинаковый через любой egress; долбить
+    # другие транспорты бессмысленно, а прямой на крупном теле ещё и виснет на WAF.
     for proxy in transports:
+        origin_reached = False
         try:
             async with httpx.AsyncClient(timeout=_PUT_TIMEOUT, follow_redirects=True,
                                          headers=_HEADERS, proxy=proxy) as c:
@@ -135,6 +139,7 @@ async def put_file(host: str, file_name: str, raw: str, *,
                         # транспортная ошибка (прокси недоступен/таймаут) → следующий транспорт
                         last_exc = e
                         break
+                    origin_reached = True
                     if resp.status_code < 400:
                         if proxy:
                             logger.info("PUT %s ok via proxy %s (login %s)",
@@ -148,6 +153,9 @@ async def put_file(host: str, file_name: str, raw: str, *,
             # не удалось поднять клиент/достучаться до прокси → следующий транспорт
             last_exc = e
             continue
+        if origin_reached:
+            # origin отозвался и отверг все креды — дальше пробовать нечего
+            break
     if last_exc:
         raise last_exc
     raise RuntimeError(f"PUT {url}: no auth candidates")
