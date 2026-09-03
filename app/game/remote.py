@@ -52,6 +52,15 @@ _GET_TIMEOUT = httpx.Timeout(30.0)
 _PUT_TIMEOUT = httpx.Timeout(60.0)
 
 
+def _egress_transports() -> list[str | None]:
+    """Порядок egress для запросов к uncivserver: каждый прокси, затем прямой.
+
+    kingru-IP забанен Cloudflare-WAF на КРУПНЫХ переносах — режется и большой PUT
+    (тело запроса), и большой GET (тело ответа). Прокси (незабаненный IP) снимает
+    оба; прямой оставляем последним резервом для мелочи, если все прокси легли."""
+    return list(_UPLOAD_PROXIES) + [None]
+
+
 def _files_url(host: str, file_name: str) -> str:
     return f"{host.rstrip('/')}/files/{file_name}"
 
@@ -60,12 +69,26 @@ async def fetch_file(host: str, file_name: str) -> str:
     """GET <host>/files/<file_name>; return raw on-disk text. Raises on HTTP error.
 
     ``file_name`` is the bare game id for the save, or ``<id>_Preview`` for preview.
+
+    Идём через egress-транспорты (прокси → прямой): крупный сейв с kingru напрямую
+    режется WAF (ReadTimeout), через прокси читается за ~секунду. На транспортной
+    ошибке пробуем следующий; HTTP-ошибку origin (404 и пр.) отдаём наверх сразу.
     """
-    async with httpx.AsyncClient(timeout=_GET_TIMEOUT, follow_redirects=True,
-                                 headers=_HEADERS) as c:
-        resp = await c.get(_files_url(host, file_name), auth=(FALLBACK_UID, ""))
-    resp.raise_for_status()
-    return resp.text.strip()
+    url = _files_url(host, file_name)
+    last_exc: Exception | None = None
+    for proxy in _egress_transports():
+        try:
+            async with httpx.AsyncClient(timeout=_GET_TIMEOUT, follow_redirects=True,
+                                         headers=_HEADERS, proxy=proxy) as c:
+                resp = await c.get(url, auth=(FALLBACK_UID, ""))
+        except httpx.HTTPError as e:
+            last_exc = e            # прокси недоступен/таймаут → следующий транспорт
+            continue
+        resp.raise_for_status()      # origin ответил: 4xx/5xx одинаков через любой egress
+        return resp.text.strip()
+    if last_exc:
+        raise last_exc
+    raise RuntimeError(f"GET {url}: no transport")
 
 
 def spectator_id_from_raw(raw: str) -> str | None:
@@ -118,10 +141,8 @@ async def put_file(host: str, file_name: str, raw: str, *,
     body = raw.encode("utf-8")
     last_exc: Exception | None = None
 
-    # Транспорты для заливки: каждый настроенный прокси по порядку, затем прямой
-    # (proxy=None) как последний резерв (для мелкого тела, если все прокси легли).
-    transports: list[str | None] = list(_UPLOAD_PROXIES)
-    transports.append(None)
+    # Транспорты для заливки: каждый прокси по порядку, затем прямой (последний резерв).
+    transports = _egress_transports()
 
     # К следующему транспорту переходим ТОЛЬКО если текущий не достучался до origin
     # (прокси лёг/таймаут). Если origin ответил, но отверг ВСЕ креды (4xx) — это
