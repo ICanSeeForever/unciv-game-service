@@ -985,7 +985,6 @@ async def _run_start_game(task, body: StartGameRequest) -> None:
 # GET /games/{game_id}/snapshot  — all tracker data in one save read
 # ---------------------------------------------------------------------------
 
-_SEA_TRADE_ROUTE_PREFIX = "Sea Trade Route"
 _SKIP_SNAPSHOT_CIVS = frozenset({"Barbarians", "Spectator", "Spectators"})
 
 
@@ -1071,23 +1070,6 @@ def _extract_snapshot(save: dict) -> dict:
     human_set = set(human_nations)
     human_units = [u for u in units if u.get("owner") in human_set]
 
-    sea_trade_routes: list[dict] = []
-    for tile in (save.get("tileMap") or {}).get("tileList") or []:
-        if not isinstance(tile, dict):
-            continue
-        improvement = tile.get("improvement")
-        if not improvement or not str(improvement).startswith(_SEA_TRADE_ROUTE_PREFIX):
-            continue
-        pos = tile.get("position") or {}
-        owner = str(tile.get("roadOwner") or tile.get("improvementOwner") or "").strip()
-        sea_trade_routes.append({
-            "owner": owner,
-            "route_name": str(improvement),
-            "terrain": str(tile.get("baseTerrain") or ""),
-            "x": pos.get("x"),
-            "y": pos.get("y"),
-        })
-
     return {
         "turns": int(save.get("turns") or 0),
         "human_nations": human_nations,
@@ -1095,7 +1077,6 @@ def _extract_snapshot(save: dict) -> dict:
         "policies_by_nation": policies_by_nation,
         "nations_status": nations_status,
         "human_units": human_units,
-        "sea_trade_routes": sea_trade_routes,
         "city_buildings": city_buildings,
         "capitals": capitals,
     }
