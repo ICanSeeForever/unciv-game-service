@@ -40,6 +40,14 @@ FALLBACK_UID = "5f6d4c3b-2a19-4e87-b6c5-0d1e2f3a4b5c"
 _UNCIV_UA = os.getenv("UNCIV_USER_AGENT", "Unciv/4.21.14-GNU-Terry-Pratchett")
 _HEADERS = {"User-Agent": _UNCIV_UA}
 
+# Форвард-прокси (tinyproxy) для ЗАЛИВКИ (PUT) на uncivserver. Наш боевой IP kingru
+# забанен Cloudflare-WAF на крупных PUT (мелкие проходят), поэтому большие сейвы льём
+# через незабаненный IP (germ/neth). GET не проксируем — там тело мелкое, не режется.
+# Env — список URL через запятую: пробуем по порядку (germ, затем neth-фолбэк), а
+# если ни один не сработал — прямой заход как последний резерв (пройдёт хотя бы мелочь).
+_UPLOAD_PROXIES = [p.strip() for p in (os.getenv("UNCIV_UPLOAD_PROXY") or "").split(",")
+                   if p.strip()]
+
 _GET_TIMEOUT = httpx.Timeout(30.0)
 _PUT_TIMEOUT = httpx.Timeout(60.0)
 
@@ -109,21 +117,37 @@ async def put_file(host: str, file_name: str, raw: str, *,
     url = _files_url(host, file_name)
     body = raw.encode("utf-8")
     last_exc: Exception | None = None
-    async with httpx.AsyncClient(timeout=_PUT_TIMEOUT, follow_redirects=True,
-                                 headers=_HEADERS) as c:
-        for login, pw in candidates:
-            try:
-                resp = await c.put(url, content=body, auth=(login, pw))
-            except httpx.HTTPError as e:
-                last_exc = e
-                continue
-            if resp.status_code < 400:
-                return login
-            last_exc = httpx.HTTPStatusError(
-                f"PUT {url} -> {resp.status_code}", request=resp.request,
-                response=resp)
-            # 401/403 → try next credential; other codes unlikely to differ but
-            # we still fall through to the throwaway UUID as a last resort.
+
+    # Транспорты для заливки: каждый настроенный прокси по порядку, затем прямой
+    # (proxy=None) как последний резерв. Прокси-фейл на уровне соединения (лёг/
+    # таймаут) → переходим к следующему; смена egress-IP может дать иной вердикт WAF.
+    transports: list[str | None] = list(_UPLOAD_PROXIES)
+    transports.append(None)
+
+    for proxy in transports:
+        try:
+            async with httpx.AsyncClient(timeout=_PUT_TIMEOUT, follow_redirects=True,
+                                         headers=_HEADERS, proxy=proxy) as c:
+                for login, pw in candidates:
+                    try:
+                        resp = await c.put(url, content=body, auth=(login, pw))
+                    except httpx.HTTPError as e:
+                        # транспортная ошибка (прокси недоступен/таймаут) → следующий транспорт
+                        last_exc = e
+                        break
+                    if resp.status_code < 400:
+                        if proxy:
+                            logger.info("PUT %s ok via proxy %s (login %s)",
+                                        file_name, proxy, login)
+                        return login
+                    last_exc = httpx.HTTPStatusError(
+                        f"PUT {url} -> {resp.status_code}", request=resp.request,
+                        response=resp)
+                    # 401/403 → следующий креденшл на том же транспорте
+        except httpx.HTTPError as e:
+            # не удалось поднять клиент/достучаться до прокси → следующий транспорт
+            last_exc = e
+            continue
     if last_exc:
         raise last_exc
     raise RuntimeError(f"PUT {url}: no auth candidates")

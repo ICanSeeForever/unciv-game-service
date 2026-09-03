@@ -9,6 +9,9 @@ services:
       - .env
     environment:
       CIV_PATH: /data/unciv
+      # Форвард-прокси (tinyproxy) для заливки крупных сейвов на uncivserver.xyz:
+      # kingru-IP забанен Cloudflare-WAF, льём через germ, фолбэк на neth, затем прямой.
+      UNCIV_UPLOAD_PROXY: "http://89.125.90.69:8888,http://185.223.93.39:8888"
     volumes:
       - ${CIV_PATH}:/data/unciv
       # Place Unciv.jar next to docker-compose.yml for local launcher
