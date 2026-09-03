@@ -153,6 +153,81 @@ async def map_check(
 
 
 # ---------------------------------------------------------------------------
+# Синхронизация игры между двумя хостами (host-sync)
+# ---------------------------------------------------------------------------
+
+@router.get("/{game_id}/progress",
+            summary="Дешёвый прогресс хода (turns, currentPlayer) из превью")
+async def game_progress(
+    game_id: str,
+    host: str | None = Query(default=None, description=_HOST_DESC),
+):
+    """Из превью (`<id>_Preview`, ~1 КБ) — номер хода и текущий игрок. Если превью
+    нет — из основного сейва. Используется шедулером синхронизации для дешёвого
+    детекта, не таща весь сейв."""
+    _validate_game_id(game_id)
+    raw = await get_preview_raw(game_id, host)
+    source = "preview"
+    if not raw:
+        try:
+            raw = await get_save_raw(game_id, host)
+        except FileNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        source = "save"
+    try:
+        d = decode_save(raw)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=422, detail=f"decode failed: {e}")
+    return {"turns": int(d.get("turns") or 0),
+            "currentPlayer": d.get("currentPlayer"), "source": source}
+
+
+class MirrorRequest(BaseModel):
+    from_host: str | None = None   # None → локальный хост (наши MultiplayerFiles)
+    to_host: str | None = None     # None → локальный хост
+
+
+@router.post("/{game_id}/mirror",
+             summary="Зеркалировать id+id_Preview с одного хоста на другой")
+async def mirror_game(game_id: str, body: MirrorRequest):
+    """Читает сырьё `id`+`id_Preview` с ``from_host`` и пишет как есть на ``to_host``
+    (локально или PUT на external). Перед записью проверяет, что основной `id`
+    согласован с превью (тот же ход/игрок) — иначе не зеркалит (`mirrored:false`),
+    чтобы не тащить полу-обновлённое состояние."""
+    _validate_game_id(game_id)
+    from_host = body.from_host or None
+    to_host = body.to_host or None
+    try:
+        save_raw = await get_save_raw(game_id, from_host)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=f"source save missing: {e}")
+    try:
+        sd = decode_save(save_raw)
+    except Exception as e:  # noqa: BLE001
+        return {"mirrored": False, "reason": f"source save decode failed: {e}"}
+    s_turns = int(sd.get("turns") or 0)
+    s_cur = sd.get("currentPlayer")
+
+    preview_raw = await get_preview_raw(game_id, from_host)
+    if preview_raw:
+        try:
+            pd = decode_save(preview_raw)
+        except Exception:  # noqa: BLE001
+            return {"mirrored": False, "reason": "source preview decode failed"}
+        if (int(pd.get("turns") or 0), pd.get("currentPlayer")) != (s_turns, s_cur):
+            return {"mirrored": False, "reason": "save/preview inconsistent",
+                    "save": {"turns": s_turns, "currentPlayer": s_cur},
+                    "preview": {"turns": int(pd.get("turns") or 0),
+                                "currentPlayer": pd.get("currentPlayer")}}
+
+    await store_save(game_id, save_raw, host=to_host)
+    if preview_raw:
+        await store_preview(game_id, preview_raw, host=to_host)
+    return {"mirrored": True, "turns": s_turns, "currentPlayer": s_cur,
+            "hadPreview": bool(preview_raw)}
+
+
+# ---------------------------------------------------------------------------
 # DELETE /games/{game_id}  — delete game file and preview
 # ---------------------------------------------------------------------------
 
