@@ -908,15 +908,9 @@ async def _run_start_game(task, body: StartGameRequest) -> None:
         elif body.builtin_ruleset:
             task.add_log(f"⬇️ Подготовка рулсета «{body.builtin_ruleset}»...")
             try:
-                await launcher.materialize_builtin_ruleset(body.builtin_ruleset)
-                # ruleset должен участвовать как мод в обеих секциях, иначе форк
-                # грузит его без speeds.
-                for _sec in ("gameParameters", "mapParameters"):
-                    sec = config.setdefault(_sec, {})
-                    mods = list(sec.get("mods") or [])
-                    if body.builtin_ruleset not in mods:
-                        mods.append(body.builtin_ruleset)
-                    sec["mods"] = mods
+                # Выкладываем jsons/ из jar на диск — console-режим читает базовые
+                # рулсеты оттуда. Мод-папка НЕ нужна, config.mods не трогаем.
+                await launcher.prepare_builtin_ruleset()
                 task.add_log("✅ Рулсет подготовлен.")
             except Exception as e:
                 await update_task(task, status=TaskStatus.failed, error=f"Ошибка подготовки рулсета: {e}")
