@@ -131,6 +131,8 @@ async def map_check(
     max_distance: int | None = Query(default=None, description="Override maximum distance between start positions"),
     min_luxuries: int | None = Query(default=None, description="Override minimum total luxuries in radius"),
     min_unique_luxuries: int | None = Query(default=None, description="Override minimum unique luxury types"),
+    min_land_per_player: int | None = Query(default=None, description="Override minimum land per player"),
+    max_land_per_player: int | None = Query(default=None, description="Override maximum land per player"),
     host: str | None = Query(default=None, description=_HOST_DESC),
 ):
     _validate_game_id(game_id)
@@ -144,6 +146,8 @@ async def map_check(
         max_distance=max_distance,
         min_luxuries=min_luxuries,
         min_unique_luxuries=min_unique_luxuries,
+        min_land_per_player=min_land_per_player,
+        max_land_per_player=max_land_per_player,
     )
     return {"ok": result.ok, "issues": result.issues, "details": result.details}
 
