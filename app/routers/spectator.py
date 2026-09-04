@@ -5,6 +5,7 @@ frontend is public and renders exactly this data, so we expose a denormalized,
 read-only projection of the save instead of shipping the game-service API key
 to the web tier. Games are addressed by unguessable UUIDs.
 """
+import functools
 import json
 import os
 import re
@@ -585,6 +586,50 @@ def _diplomacy(save: dict) -> dict:
     return {n: sorted(s) for n, s in war.items()}
 
 
+@functools.lru_cache(maxsize=1)
+def _engine_iron_speeds() -> tuple:
+    """Валидные скорости из RekMOD Speeds.json движка + последняя Multiplayer-iron.
+
+    Возвращает (set валидных имён, имя последней Multiplayer-iron по версии).
+    Файл — нестрогий Unciv-JSON (комменты/висячие запятые), парсим регуляркой."""
+    try:
+        from app.game import native_stats as _ns
+        p = _ns._SRC_DIR / "mods" / "RekMOD iron" / "jsons" / "Speeds.json"
+        names = re.findall(r'"name"\s*:\s*"([^"]+)"',
+                           p.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return (frozenset(), None)
+    irons = [n for n in names if n.startswith("Multiplayer-iron")]
+    latest = max(irons, key=lambda n: [int(x) for x in re.findall(r"\d+", n)] or [0]) \
+        if irons else None
+    return (frozenset(names), latest)
+
+
+def _remap_speed_for_engine(save: dict) -> None:
+    """Если скорость сейва выпилена из текущего RekMOD (старые игры), подменяем её
+    на ближайшую валидную ПЕРЕД подачей в нативный движок — иначе NPE в
+    setGlobalTransients (ruleset.speeds[speed]!!) и стата/защита пропадают.
+    Для 'Multiplayer-iron-4.5.2fix' берём точное 'Multiplayer-iron-4.5.2', иначе —
+    последнюю доступную Multiplayer-iron. На отдаваемые клиенту поля не влияет."""
+    gp = save.get("gameParameters")
+    if not isinstance(gp, dict):
+        return
+    speed = gp.get("speed")
+    if not speed:
+        return
+    valid, latest = _engine_iron_speeds()
+    if not valid or speed in valid:
+        return
+    repl = None
+    if speed.startswith("Multiplayer-iron"):
+        stripped = re.sub(r"[^0-9.]+$", "", speed)  # "…-4.5.2fix" -> "…-4.5.2"
+        repl = stripped if stripped in valid else latest
+    if repl is None:
+        repl = latest or ("Solo-iron" if "Solo-iron" in valid else None)
+    if repl:
+        gp["speed"] = repl
+
+
 def _build_state(save: dict, game_id: str, *, expose_player_id: bool = False,
                  pid_fallback: dict | None = None) -> dict:
     """Denormalize a decoded save into the viewer's spectator-state shape.
@@ -593,6 +638,12 @@ def _build_state(save: dict, game_id: str, *, expose_player_id: bool = False,
     нацию civStats. Ставим ТОЛЬКО на гейтимом by-name роуте: core-гейт по нему
     резолвит показываемый ник (сайт/тг, обрезка по роли зрителя) и ВЫРЕЗАЕТ
     playerId из ответа. На by-id роуте (не гейтится) playerId не отдаём."""
+    # Старые игры хранят скорость (напр. Multiplayer-iron-4.5.2fix), которую RekMOD
+    # давно выпилил из Speeds.json → нативный движок падает NPE в setGlobalTransients
+    # (ruleset.speeds[speed]!!), и вся стата/защита пропадает. Как команда spectate
+    # (она ставит игре валидную скорость), ремапим недоступную скорость на ближайшую
+    # валидную ТОЛЬКО для входа движка (на отдаваемые данные не влияет).
+    _remap_speed_for_engine(save)
     # Encode the ORIGINAL save for the native engine (it reads/migrates its own boxed
     # format), then normalise boxed primitives in place for the Python denormalizers.
     daemon_save_str = encode_save(save)
