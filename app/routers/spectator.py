@@ -538,6 +538,22 @@ async def spectator_state(game_id: str):
     return _build_state(save, game_id)
 
 
+def _civ_player_ids_from_backup(folder: Path) -> dict:
+    """{civName: playerId} из последнего бэкапа с непустыми playerId — фолбэк для
+    живого сейва, где playerId текущего игрока может отсутствовать."""
+    for t in reversed(_turns_of(folder)):
+        try:
+            bk = _extract_backup_save(folder, t)
+        except Exception:  # noqa: BLE001
+            continue
+        m = {c.get("civName"): str(c.get("playerId") or "")
+             for c in bk.get("civilizations") or []
+             if c.get("civName") and c.get("playerId")}
+        if m:
+            return m
+    return {}
+
+
 _BARBARIANS = "Barbarians"
 
 
@@ -552,7 +568,13 @@ def _diplomacy(save: dict) -> dict:
     for c in civs:
         n = c.get("civName")
         for other, dm in (c.get("diplomacy") or {}).items():
-            if isinstance(dm, dict) and dm.get("diplomaticStatus") == "War":
+            if not isinstance(dm, dict):
+                continue
+            # Unciv: DiplomaticStatus по умолчанию = War, поэтому у воюющих ключ
+            # diplomaticStatus ОПУСКАЕТСЯ (Peace/Protector пишутся явно). Значит
+            # отсутствие статуса у существующей записи = война.
+            status = dm.get("diplomaticStatus")
+            if status is None or status == "War":
                 war.setdefault(n, set()).add(other)
                 war.setdefault(other, set()).add(n)
     # Варвары — в состоянии войны со всеми (и наоборот).
@@ -563,7 +585,8 @@ def _diplomacy(save: dict) -> dict:
     return {n: sorted(s) for n, s in war.items()}
 
 
-def _build_state(save: dict, game_id: str, *, expose_player_id: bool = False) -> dict:
+def _build_state(save: dict, game_id: str, *, expose_player_id: bool = False,
+                 pid_fallback: dict | None = None) -> dict:
     """Denormalize a decoded save into the viewer's spectator-state shape.
 
     ``expose_player_id`` — добавить ``playerId`` (скрытый игровой userid) на каждую
@@ -620,7 +643,10 @@ def _build_state(save: dict, game_id: str, *, expose_player_id: bool = False) ->
     # и обрезку по роли зрителя, затем вырезает playerId.
     id_to_name = _player_id_to_name()
     for civ in save.get("civilizations") or []:
-        name, pid = civ.get("civName"), str(civ.get("playerId") or "")
+        name = civ.get("civName")
+        # В живом сейве playerId у текущего игрока иногда отсутствует — фолбэк из
+        # последнего бэкапа (маппинг нация→playerId стабилен в пределах партии).
+        pid = str(civ.get("playerId") or "") or (pid_fallback or {}).get(name, "")
         if name not in civ_stats or not pid:
             continue
         if id_to_name.get(pid):
@@ -790,7 +816,8 @@ async def game_state(
             save = await get_save_dict(uuid)
         except FileNotFoundError as e:
             raise HTTPException(status_code=404, detail=str(e))
-        return _build_state(save, uuid, expose_player_id=True)
+        return _build_state(save, uuid, expose_player_id=True,
+                            pid_fallback=_civ_player_ids_from_backup(folder))
     if not turn.isdigit():
         raise HTTPException(status_code=400, detail="turn must be a number or 'current'")
     save = _extract_backup_save(folder, int(turn))
