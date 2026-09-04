@@ -538,8 +538,13 @@ async def spectator_state(game_id: str):
     return _build_state(save, game_id)
 
 
-def _build_state(save: dict, game_id: str) -> dict:
-    """Denormalize a decoded save into the viewer's spectator-state shape."""
+def _build_state(save: dict, game_id: str, *, expose_player_id: bool = False) -> dict:
+    """Denormalize a decoded save into the viewer's spectator-state shape.
+
+    ``expose_player_id`` — добавить ``playerId`` (скрытый игровой userid) на каждую
+    нацию civStats. Ставим ТОЛЬКО на гейтимом by-name роуте: core-гейт по нему
+    резолвит показываемый ник (сайт/тг, обрезка по роли зрителя) и ВЫРЕЗАЕТ
+    playerId из ответа. На by-id роуте (не гейтится) playerId не отдаём."""
     # Encode the ORIGINAL save for the native engine (it reads/migrates its own boxed
     # format), then normalise boxed primitives in place for the Python denormalizers.
     daemon_save_str = encode_save(save)
@@ -586,12 +591,17 @@ def _build_state(save: dict, game_id: str) -> dict:
     civ_stats = _civ_economy(save)
     religions = _religions(save)
     # Telegram nick per nation (save playerId -> core-service user card), if known.
+    # + playerId (только при expose_player_id) — core-гейт резолвит по нему сайт-ник
+    # и обрезку по роли зрителя, затем вырезает playerId.
     id_to_name = _player_id_to_name()
-    if id_to_name:
-        for civ in save.get("civilizations") or []:
-            name, pid = civ.get("civName"), str(civ.get("playerId") or "")
-            if name in civ_stats and pid and id_to_name.get(pid):
-                civ_stats[name]["player"] = id_to_name[pid]
+    for civ in save.get("civilizations") or []:
+        name, pid = civ.get("civName"), str(civ.get("playerId") or "")
+        if name not in civ_stats or not pid:
+            continue
+        if id_to_name.get(pid):
+            civ_stats[name]["player"] = id_to_name[pid]
+        if expose_player_id:
+            civ_stats[name]["playerId"] = pid
     # Per-turn income / net happiness + policy timing, resources and per-city plate
     # numbers — all exact, from the native Unciv engine (the real game code headless).
     # If the engine is unavailable these fields are simply absent (no approximation).
@@ -754,8 +764,8 @@ async def game_state(
             save = await get_save_dict(uuid)
         except FileNotFoundError as e:
             raise HTTPException(status_code=404, detail=str(e))
-        return _build_state(save, uuid)
+        return _build_state(save, uuid, expose_player_id=True)
     if not turn.isdigit():
         raise HTTPException(status_code=400, detail="turn must be a number or 'current'")
     save = _extract_backup_save(folder, int(turn))
-    return _build_state(save, f"{name}@{turn}")
+    return _build_state(save, f"{name}@{turn}", expose_player_id=True)
