@@ -235,12 +235,29 @@ def _civ_attacks(save: dict) -> list[dict]:
     return out
 
 
-def _player_civs(save: dict) -> list[str]:
-    """Civs present on the map (own a city or a unit), for the vision-mode picker.
+def _major_civ_names(save: dict) -> set[str] | None:
+    """Names of the playable MAJOR civs = the nations chosen by players
+    (``gameParameters.players[].chosenCiv``), minus the Spectator pseudo-civ.
 
-    Excludes the Spectator pseudo-civ and Barbarians. City-states are kept here
-    (the frontend filters them out via its bundled nation metadata), so this stays
-    ruleset-agnostic on the backend.
+    Ruleset-agnostic and reliable for both G&K and RekMOD saves — city-states are
+    added by the engine and never appear in ``players``. Returns None if the save
+    carries no usable player roster (then callers fall back to keeping everyone)."""
+    players = (save.get("gameParameters") or {}).get("players") or []
+    majors = {
+        p.get("chosenCiv") for p in players
+        if isinstance(p, dict) and p.get("chosenCiv") and p.get("chosenCiv") != "Spectator"
+    }
+    return majors or None
+
+
+def _player_civs(save: dict) -> list[str]:
+    """Playable major civs present on the map (own a city or a unit), for the
+    vision-mode picker. Excludes Spectator, Barbarians and all city-states.
+
+    City-states are dropped on the backend via the player roster (chosenCiv) so this
+    works identically for G&K and RekMOD without relying on the frontend's bundled
+    (RekMOD) nation metadata. Falls back to keeping every non-barbarian civ only when
+    the save has no player roster.
     """
     unit_owners: set[str] = set()
     for tile in (save.get("tileMap") or {}).get("tileList") or []:
@@ -253,11 +270,14 @@ def _player_civs(save: dict) -> list[str]:
         for u in tile.get("airUnits") or []:
             if isinstance(u, dict) and u.get("owner"):
                 unit_owners.add(u["owner"])
+    majors = _major_civ_names(save)
     out: list[str] = []
     for civ in save.get("civilizations") or []:
         name = civ.get("civName")
         if not name or name in ("Spectator", "Barbarians"):
             continue
+        if majors is not None and name not in majors:
+            continue  # city-state (or non-roster civ) — not a playable nation
         if (civ.get("cities") or []) or name in unit_owners:
             out.append(name)
     return out
