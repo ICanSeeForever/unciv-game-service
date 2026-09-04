@@ -538,6 +538,31 @@ async def spectator_state(game_id: str):
     return _build_state(save, game_id)
 
 
+_BARBARIANS = "Barbarians"
+
+
+def _diplomacy(save: dict) -> dict:
+    """{civName: [враги]} — с кем каждая цивилизация в состоянии войны
+    (Unciv DiplomacyManager.diplomaticStatus == 'War'), симметрично. Варвары воюют
+    со всеми (Unciv: barbarians at war with everyone). Для красной ауры войны во
+    вьюере в режиме обзора (isAtWarWith(viewingCiv))."""
+    civs = save.get("civilizations") or []
+    names = [c.get("civName") for c in civs if c.get("civName")]
+    war: dict[str, set] = {n: set() for n in names}
+    for c in civs:
+        n = c.get("civName")
+        for other, dm in (c.get("diplomacy") or {}).items():
+            if isinstance(dm, dict) and dm.get("diplomaticStatus") == "War":
+                war.setdefault(n, set()).add(other)
+                war.setdefault(other, set()).add(n)
+    # Варвары — в состоянии войны со всеми (и наоборот).
+    for n in names:
+        if n != _BARBARIANS:
+            war.setdefault(n, set()).add(_BARBARIANS)
+            war.setdefault(_BARBARIANS, set()).add(n)
+    return {n: sorted(s) for n, s in war.items()}
+
+
 def _build_state(save: dict, game_id: str, *, expose_player_id: bool = False) -> dict:
     """Denormalize a decoded save into the viewer's spectator-state shape.
 
@@ -692,6 +717,7 @@ def _build_state(save: dict, game_id: str, *, expose_player_id: bool = False) ->
         "civStats": civ_stats,
         "religions": religions,
         "currentPlayer": save.get("currentPlayer"),
+        "diplomacy": _diplomacy(save),
     }
 
 
