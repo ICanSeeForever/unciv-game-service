@@ -448,6 +448,9 @@ def _extract_cities(save: dict) -> list[dict]:
                 "specialists": {k: int(v) for k, v in (pop.get("specialistAllocations") or {}).items()},
                 # Puppeted cities don't benefit from social policies (stats engine).
                 "isPuppet": bool(city.get("isPuppet")),
+                # Город в процессе сжигания (Unciv CityInfo.isBeingRazed) — иконка
+                # огня под плашкой, как в StatusTable оригинала (OtherIcons/Fire).
+                "isBeingRazed": bool(city.get("isBeingRazed")),
             })
     return cities
 
