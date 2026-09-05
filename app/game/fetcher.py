@@ -18,7 +18,7 @@ def _fmt_ts(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=_TZ_MOSCOW).strftime("%Y-%m-%d %H:%M:%S")
 
 from app.config import settings
-from app.game.parser import regenerate_preview
+from app.game.parser import build_preview_from_save, regenerate_preview
 from app.game.parser import decode_save
 from app.game import remote
 
@@ -148,25 +148,24 @@ def _tar_add_text(tar: tarfile.TarFile, arcname: str, text: str) -> None:
 
 def create_backup(game_id: str, *, backup_dir: str, turn=None,
                   nation: str | None = None, max_keep: int = 30,
-                  save_text: str | None = None,
-                  preview_text: str | None = None) -> str:
-    """Tar the save (+ preview) into ``backup_dir`` as ``{turn}_{nation}_{ts}.tar.gz``.
+                  save_text: str | None = None) -> str:
+    """Tar the save into ``backup_dir`` as ``{turn}_{nation}_{ts}.tar.gz``.
 
-    Spectate-совместимый архив: сам сейв под arcname = game_id (в имени есть дефис),
-    preview под ``{game_id}_Preview`` — ровно то, что ищет ``load_spectate_backup``.
-    Ротация: в каталоге остаётся не более ``max_keep`` свежих архивов. Возвращает
-    имя созданного файла.
+    Превью в архив НЕ кладём: оно — обрезанная копия сейва и при
+    восстановлении/спектейте детерминированно генерится из сейва
+    (``regenerate_preview`` / ``build_preview_from_save``). Так архив легче, а
+    для внешнего хоста не нужен лишний (и часто банимый WAF) GET превью.
+    Сам сейв под arcname = game_id (в имени есть дефис). Ротация: в каталоге
+    остаётся не более ``max_keep`` свежих архивов. Возвращает имя файла.
 
-    ``save_text``/``preview_text`` заданы (внешний хост: файлы не лежат локально) →
-    архив собирается из переданного содержимого, а не из MultiplayerFiles.
+    ``save_text`` задан (внешний хост: файла нет локально) → архив собирается из
+    переданного содержимого, а не из MultiplayerFiles.
     """
     if save_text is None:
         save = _local_path(game_id)
         if not save.is_file():
             raise FileNotFoundError(f"Game file not found: {game_id}")
         save_text = save.read_text(encoding="utf-8")
-        preview = _preview_path(game_id)
-        preview_text = preview.read_text(encoding="utf-8") if preview.is_file() else None
     bdir = Path(backup_dir)
     bdir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -175,8 +174,6 @@ def create_backup(game_id: str, *, backup_dir: str, turn=None,
     archive = bdir / name
     with tarfile.open(archive, "w:gz") as tar:
         _tar_add_text(tar, game_id, save_text)
-        if preview_text is not None:
-            _tar_add_text(tar, f"{game_id}_Preview", preview_text)
     if max_keep and max_keep > 0:
         files = sorted(
             [p for p in bdir.iterdir() if p.is_file() and p.name.endswith(".tar.gz")],
@@ -226,25 +223,20 @@ def restore_backup(backup_file: Path, target_game_id: str, *,
         except FileNotFoundError:
             pass  # живого файла ещё нет (первая заливка) — бэкапить нечего
     save_text: str | None = None
-    preview_text: str | None = None
     with tarfile.open(backup_file, "r:gz") as tar:
         for member in tar.getmembers():
             if not member.isfile():
                 continue
+            if os.path.basename(member.name).endswith("_Preview"):
+                continue  # архивное превью игнорируем — генерим из сейва
             extracted = tar.extractfile(member)
             if extracted is None:
                 continue
-            content = extracted.read().decode("utf-8")
-            base = os.path.basename(member.name)
-            if base.endswith("_Preview"):
-                preview_text = content
-            else:
-                save_text = content
+            save_text = extracted.read().decode("utf-8")
     if save_text is None:
         raise ValueError("no save file in backup archive")
-    # Архивное превью может отставать от сейва на ход — генерим превью заново из
-    # сейва (единственный источник истины), fallback на архивное при ошибке.
-    preview_text = regenerate_preview(save_text, preview_text)
+    # Превью генерим заново из сейва (единственный источник истины).
+    preview_text = regenerate_preview(save_text)
     write_save(target_game_id, save_text)
     restored = {"save": True, "preview": False}
     if preview_text is not None:
@@ -262,23 +254,19 @@ def extract_backup_contents(backup_file: Path) -> dict[str, str | None]:
     if not backup_file.is_file():
         raise FileNotFoundError(f"Backup not found: {backup_file}")
     save_text: str | None = None
-    preview_text: str | None = None
     with tarfile.open(backup_file, "r:gz") as tar:
         for member in tar.getmembers():
             if not member.isfile():
                 continue
+            if os.path.basename(member.name).endswith("_Preview"):
+                continue  # архивное превью игнорируем — генерим из сейва
             extracted = tar.extractfile(member)
             if extracted is None:
                 continue
-            content = extracted.read().decode("utf-8")
-            base = os.path.basename(member.name)
-            if base.endswith("_Preview"):
-                preview_text = content
-            else:
-                save_text = content
+            save_text = extracted.read().decode("utf-8")
     if save_text is None:
         raise ValueError("no save file in backup archive")
-    return {"save_text": save_text, "preview_text": preview_text}
+    return {"save_text": save_text, "preview_text": None}
 
 
 def make_single_player(save: dict, nations: list[str]) -> dict:
@@ -407,12 +395,11 @@ def load_spectate_backup(backup_file: Path, target_game_id: str) -> str:
         with tarfile.open(backup_file, "r:gz") as tar:
             for member in tar.getmembers():
                 file_name = os.path.basename(member.name)
-                if "-" not in file_name:
-                    continue
-                is_preview = "Preview" in file_name
-                if not is_preview and original_game_id is None:
+                if "-" not in file_name or "Preview" in file_name:
+                    continue  # превью в бэкапе больше нет — всё берём из сейва
+                if original_game_id is None:
                     original_game_id = file_name
-                member.name = "tmp_Preview" if is_preview else "tmp_main"
+                member.name = "tmp_main"
                 tar.extract(member, path=tmp_dir)
 
         if not original_game_id:
@@ -420,21 +407,15 @@ def load_spectate_backup(backup_file: Path, target_game_id: str) -> str:
 
         main_dict = _decode((tmp_path / "tmp_main").read_text(encoding="utf-8").strip(), original_game_id)
         _patch_params(main_dict)
+        spec_id = ""
         for player in main_dict.get("civilizations", []):
-            if player.get("civName") != "Spectator" and "playerId" in player:
+            if player.get("civName") == "Spectator":
+                spec_id = player.get("playerId", "")
+            elif "playerId" in player:
                 player["playerId"] = "00000000-0000-0000-0000-000000000000"
         write_save(target_game_id, encode_save(main_dict))
-
-        spec_id = ""
-        preview_tmp = tmp_path / "tmp_Preview"
-        if preview_tmp.is_file():
-            prev_dict = _decode(preview_tmp.read_text(encoding="utf-8").strip(), original_game_id)
-            _patch_params(prev_dict)
-            for player in prev_dict.get("civilizations", []):
-                if player.get("civName") == "Spectator":
-                    spec_id = player.get("playerId", "")
-                    break
-            write_preview(target_game_id, encode_save(prev_dict))
+        # Превью не хранится в бэкапе — генерим из пропатченного сейва.
+        write_preview(target_game_id, encode_save(build_preview_from_save(main_dict)))
 
     return spec_id
 

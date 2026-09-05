@@ -639,20 +639,20 @@ async def create_game_backup(game_id: str, body: BackupRequest):
     if body.subdirectory:
         backup_dir = f"{backup_dir}/{body.subdirectory}"
     loop = asyncio.get_event_loop()
-    # Внешний хост: файлы игры не лежат локально — тянем их через API и архивируем
-    # уже переданное содержимое (бэкапы всегда храним у себя).
-    save_text = preview_text = None
+    # Внешний хост: файл игры не лежит локально — тянем его через API и архивируем
+    # уже переданное содержимое (бэкапы всегда храним у себя). Превью не тянем и не
+    # храним — оно генерится из сейва при восстановлении/спектейте.
+    save_text = None
     if body.host:
         try:
             save_text = await get_save_raw(game_id, body.host)
-            preview_text = await get_preview_raw(game_id, body.host)
         except FileNotFoundError as e:
             raise HTTPException(status_code=404, detail=str(e))
     try:
         name = await loop.run_in_executor(None, lambda: create_backup(
             game_id, backup_dir=backup_dir, turn=body.turn,
             nation=body.nation, max_keep=body.max_keep,
-            save_text=save_text, preview_text=preview_text))
+            save_text=save_text))
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     offsite_ok = False
@@ -702,10 +702,9 @@ async def _safety_backup(game_id: str, *, host: str | None = None) -> None:
     try:
         if host:
             save_text = await get_save_raw(game_id, host)
-            preview_text = await get_preview_raw(game_id, host)
             await loop.run_in_executor(None, lambda: create_backup(
                 game_id, backup_dir=settings.get_backup_path(), max_keep=30,
-                save_text=save_text, preview_text=preview_text))
+                save_text=save_text))
         else:
             await loop.run_in_executor(None, lambda: create_backup(
                 game_id, backup_dir=settings.get_backup_path(), max_keep=30))
