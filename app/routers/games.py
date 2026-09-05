@@ -19,7 +19,7 @@ from app.game.fetcher import (
     store_save, store_preview, get_save_raw, get_preview_raw,
     extract_backup_contents,
 )
-from app.game.parser import align_preview_to_save, decode_save, encode_save
+from app.game.parser import decode_save, encode_save, regenerate_preview
 from app.game import remote
 from app.game.static_data import CITY_STATES
 from app.launchers import get_launcher
@@ -866,9 +866,9 @@ async def restore_game(game_id: str, body: RestoreRequest):
     await store_save(game_id, contents["save_text"], host=body.host,
                      uid=body.uid, password=body.password)
     result["save"] = True
-    # Превью в архиве может отставать от сейва на ход — выравниваем по сейву.
-    preview_text = align_preview_to_save(contents["save_text"],
-                                         contents.get("preview_text"))
+    # Архивное превью может отставать от сейва на ход — генерим заново из сейва.
+    preview_text = regenerate_preview(contents["save_text"],
+                                      contents.get("preview_text"))
     if preview_text:
         await store_preview(game_id, preview_text, host=body.host,
                             uid=body.uid, password=body.password)

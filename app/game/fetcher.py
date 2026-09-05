@@ -18,7 +18,7 @@ def _fmt_ts(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=_TZ_MOSCOW).strftime("%Y-%m-%d %H:%M:%S")
 
 from app.config import settings
-from app.game.parser import align_preview_to_save
+from app.game.parser import regenerate_preview
 from app.game.parser import decode_save
 from app.game import remote
 
@@ -242,8 +242,9 @@ def restore_backup(backup_file: Path, target_game_id: str, *,
                 save_text = content
     if save_text is None:
         raise ValueError("no save file in backup archive")
-    # Превью в архиве может отставать от сейва на ход — выравниваем по сейву.
-    preview_text = align_preview_to_save(save_text, preview_text)
+    # Архивное превью может отставать от сейва на ход — генерим превью заново из
+    # сейва (единственный источник истины), fallback на архивное при ошибке.
+    preview_text = regenerate_preview(save_text, preview_text)
     write_save(target_game_id, save_text)
     restored = {"save": True, "preview": False}
     if preview_text is not None:

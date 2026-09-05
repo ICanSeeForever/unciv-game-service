@@ -18,36 +18,43 @@ def encode_save(game_dict: dict) -> str:
     return base64.b64encode(compressed).decode("ascii")
 
 
-# Поля-указатели «чей ход», которые обязаны совпадать между сейвом и превью.
-_PREVIEW_TURN_KEYS = ("currentPlayer", "turns", "currentTurnStartTime")
+# Структура GameInfoPreview (обрезанная версия сейва). Верхний уровень и поля
+# каждой цивилизации — ровно то, что кладёт Unciv ``GameInfo.asPreview()``.
+_PREVIEW_TOP_KEYS = ("civilizations", "currentPlayer", "currentTurnStartTime",
+                     "difficulty", "gameId", "gameParameters", "turns")
+_PREVIEW_CIV_KEYS = ("civName", "playerType", "playerId", "civID",
+                     "totalTurnTimeSeconds", "turnsPlayedAsHuman")
 
 
-def align_preview_to_save(save_text: str, preview_text: str | None) -> str | None:
-    """Вернуть превью, чей указатель хода приведён к сейву (сейв — авторитет).
+def build_preview_from_save(save: dict) -> dict:
+    """Собрать GameInfoPreview из полного сейва (как Unciv ``GameInfo.asPreview()``).
+
+    Превью — обрезанная копия сейва: тот же порядок цивилизаций, но у каждой лишь
+    лёгкие поля (``civName``/``playerId``/``playerType``/…), плюс указатель хода
+    (``currentPlayer``/``turns``/``currentTurnStartTime``), ``difficulty``,
+    ``gameId``, ``gameParameters``. null-поля опускаются — как в сериализации Unciv.
+    Проверено побайтово против настоящих превью.
+    """
+    civs: list[dict] = []
+    for c in save.get("civilizations", []):
+        civs.append({k: c[k] for k in _PREVIEW_CIV_KEYS if c.get(k) is not None})
+    out: dict = {}
+    for k in _PREVIEW_TOP_KEYS:
+        out[k] = civs if k == "civilizations" else save.get(k)
+    return out
+
+
+def regenerate_preview(save_text: str, fallback: str | None = None) -> str | None:
+    """Сгенерировать превью С НУЛЯ из сейва (сейв — единственный источник истины).
 
     Пер-ходовой бэкап может захватить превью, отстающее от сейва на одного игрока
-    (сейв заливается раньше своего превью). Вся детекция «чей ход» (наш шедулер и
-    клиент в лобби) читает превью — из-за отставания показывается игрок на шаг
-    назад, а реальный ``currentPlayer`` из сейва почти сразу доигрывает. Копируем
-    ``currentPlayer``/``turns``/``currentTurnStartTime`` из сейва, чтобы пара была
-    консистентна. Best-effort: при любой ошибке декодирования возвращаем исходное
-    превью без изменений.
+    (сейв заливается раньше своего превью), а вся детекция «чей ход» читает превью
+    → неверный игрок в показе и самопроизвольный ход. Поэтому при восстановлении
+    архивное превью НЕ используем, а собираем заново из восстанавливаемого сейва.
+    Best-effort: при ошибке декодирования/сборки возвращаем ``fallback`` (исходное
+    архивное превью), чтобы не сделать хуже.
     """
-    if not preview_text:
-        return preview_text
     try:
-        save = decode_save(save_text)
-        prev = decode_save(preview_text)
-    except Exception:  # noqa: BLE001 — битое превью не должно ронять restore
-        return preview_text
-    changed = False
-    for key in _PREVIEW_TURN_KEYS:
-        if key in save and prev.get(key) != save[key]:
-            prev[key] = save[key]
-            changed = True
-    if not changed:
-        return preview_text
-    try:
-        return encode_save(prev)
-    except Exception:  # noqa: BLE001
-        return preview_text
+        return encode_save(build_preview_from_save(decode_save(save_text)))
+    except Exception:  # noqa: BLE001 — битый сейв не должен ронять restore
+        return fallback
