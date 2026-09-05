@@ -18,6 +18,7 @@ def _fmt_ts(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=_TZ_MOSCOW).strftime("%Y-%m-%d %H:%M:%S")
 
 from app.config import settings
+from app.game.parser import align_preview_to_save
 from app.game.parser import decode_save
 from app.game import remote
 
@@ -224,7 +225,8 @@ def restore_backup(backup_file: Path, target_game_id: str, *,
                           max_keep=30)
         except FileNotFoundError:
             pass  # живого файла ещё нет (первая заливка) — бэкапить нечего
-    restored = {"save": False, "preview": False}
+    save_text: str | None = None
+    preview_text: str | None = None
     with tarfile.open(backup_file, "r:gz") as tar:
         for member in tar.getmembers():
             if not member.isfile():
@@ -235,13 +237,18 @@ def restore_backup(backup_file: Path, target_game_id: str, *,
             content = extracted.read().decode("utf-8")
             base = os.path.basename(member.name)
             if base.endswith("_Preview"):
-                write_preview(target_game_id, content)
-                restored["preview"] = True
+                preview_text = content
             else:
-                write_save(target_game_id, content)
-                restored["save"] = True
-    if not restored["save"]:
+                save_text = content
+    if save_text is None:
         raise ValueError("no save file in backup archive")
+    # Превью в архиве может отставать от сейва на ход — выравниваем по сейву.
+    preview_text = align_preview_to_save(save_text, preview_text)
+    write_save(target_game_id, save_text)
+    restored = {"save": True, "preview": False}
+    if preview_text is not None:
+        write_preview(target_game_id, preview_text)
+        restored["preview"] = True
     return restored
 
 
