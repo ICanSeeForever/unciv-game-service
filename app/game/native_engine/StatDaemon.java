@@ -200,7 +200,8 @@ public class StatDaemon {
               .append("\"gold\":").append(Math.round(s.getGold())).append(",")
               .append("\"science\":").append(Math.round(s.getScience())).append(",")
               .append("\"culture\":").append(Math.round(s.getCulture())).append(",")
-              .append("\"faith\":").append(Math.round(s.getFaith())).append("}");
+              .append("\"faith\":").append(Math.round(s.getFaith())).append(",")
+              .append("\"happiness\":").append(Math.round(s.getHappiness())).append("}");
         }
         sb.append("}");
 
