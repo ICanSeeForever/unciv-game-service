@@ -18,6 +18,14 @@ services:
       - ./Unciv.jar:/opt/unciv/Unciv.jar
       # Read-only: core-service user cards (playerId -> telegram nick) for the viewer.
       - /var/docker/compose/unciv-core-service/data:/data/core:ro
+    # Unciv.jar при генерации SYNC/локальных игр ходит на http://icanseeforever.com:8084.
+    # Резолвим этот хост напрямую в контейнер unciv-server по civ_network (172.21.0.4),
+    # минуя внешний DNS + hairpin на публичный IP — тот интермиттил UnknownHostException
+    # и ронял старт. В репо (а не только в локальном compose на сервере), чтобы деплой
+    # (git reset --hard) не затирал фикс. Если IP unciv-server сменится — обновить здесь
+    # (устойчивее было бы дать unciv-server сетевой alias «icanseeforever.com»).
+    extra_hosts:
+      - "icanseeforever.com:172.21.0.4"
     networks:
       - civ_network
 
