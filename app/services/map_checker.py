@@ -157,6 +157,16 @@ def check_map(
     if not nations:
         return MapCheckResult(ok=False, issues=["Не найдены стартовые позиции наций"])
 
+    # Дистанционные проверки требуют минимум двух стартов (иначе min() по пустому
+    # набору соседей падал с ValueError и рушил всю задачу запуска). Неполная
+    # генерация (<2 позиций) — это провал карты: сообщаем как несоответствие,
+    # чтобы был чистый рестарт, а не краш таска.
+    if len(nations) < 2:
+        return MapCheckResult(
+            ok=False,
+            issues=[f"Найдено стартовых позиций: {len(nations)} (нужно ≥2)"],
+        )
+
     boundary_tiles = _find_boundary_tiles(tiles_dict, map_width)
 
     min_distances: list[int] = []
