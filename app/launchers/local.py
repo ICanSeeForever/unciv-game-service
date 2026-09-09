@@ -14,7 +14,24 @@ from app.launchers.base import GameLauncher
 
 class LocalGameLauncher(GameLauncher):
     async def update(self, jar_url: str) -> None:
-        """Download zip from jar_url and extract Unciv.jar."""
+        """Скачать zip из jar_url и распаковать Unciv.jar.
+
+        Если на диске уже лежит джарка ровно этой версии — скачивание
+        пропускаем. Версию сверяем по маркеру (jar_url) рядом с данными игры
+        (persistent-том civ_path, переживает деплой). Так повторные старты при
+        актуальной джарке мгновенны, а медленная закачка с GitHub не держит
+        эксклюзивный старт-lock и не блокирует создание игр.
+        """
+        jar_path = Path(settings.unciv_jar_path)
+        marker = Path(settings.civ_path) / ".unciv_jar_version"
+        if jar_path.exists() and marker.exists():
+            try:
+                if marker.read_text(encoding="utf-8").strip() == jar_url.strip():
+                    print(f"Unciv.jar уже актуален ({jar_url}) — скачивание пропущено")
+                    return
+            except OSError:
+                pass
+
         async with httpx.AsyncClient(follow_redirects=True, timeout=300) as client:
             resp = await client.get(jar_url)
             resp.raise_for_status()
@@ -24,9 +41,15 @@ class LocalGameLauncher(GameLauncher):
             jar_entries = [n for n in z.namelist() if n.endswith(".jar")]
             if not jar_entries:
                 raise RuntimeError("No .jar found in downloaded zip")
-            jar_path = Path(settings.unciv_jar_path)
             jar_path.parent.mkdir(parents=True, exist_ok=True)
             jar_path.write_bytes(z.read(jar_entries[0]))
+
+        # Маркер версии — только после успешной распаковки.
+        try:
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text(jar_url.strip(), encoding="utf-8")
+        except OSError:
+            pass
 
     async def clone_mod(self, mod_git_url: str) -> None:
         """Fresh-clone the mod into the Unciv mods directory, wiping any existing copy.
