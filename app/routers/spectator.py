@@ -56,6 +56,43 @@ def _turns_of(folder: Path) -> list[int]:
     return sorted(turns)
 
 
+def _snapshots_of(folder: Path) -> list[dict]:
+    """Every backup snapshot in CHRONOLOGICAL (mtime) order — NOT deduped by turn.
+
+    После рестарта карта пересоздаётся и номера ходов сбрасываются, поэтому один
+    и тот же номер может встречаться несколько раз (старая и новая карта). Здесь
+    отдаём полную последовательность как она была во времени: каждому снапшоту —
+    стабильный ``idx`` (позиция в mtime-порядке), номер хода, нация и метка."""
+    out: list[dict] = []
+    for idx, p in enumerate(_archives(folder)):
+        parts = p.name[:-len(".tar.gz")].split("_") if p.name.endswith(".tar.gz") \
+            else p.name.split("_")
+        head = parts[0]
+        if not head.isdigit():
+            continue
+        nation = parts[1] if len(parts) > 1 else ""
+        ts = "_".join(parts[2:]) if len(parts) > 2 else ""
+        out.append({"idx": idx, "turn": int(head), "nation": nation, "ts": ts})
+    return out
+
+
+def _extract_backup_save_by_idx(folder: Path, idx: int) -> dict:
+    """Decode the save for a snapshot addressed by its chronological ``idx``."""
+    archives = _archives(folder)
+    if idx < 0 or idx >= len(archives):
+        raise HTTPException(status_code=404, detail=f"No snapshot #{idx}")
+    archive = archives[idx]
+    try:
+        with tarfile.open(archive, "r:gz") as tar:
+            member = _save_member(tar)
+            f = tar.extractfile(member) if member else None
+            if f is None:
+                raise HTTPException(status_code=500, detail="No save inside backup archive")
+            return decode_save(f.read().decode("utf-8").strip())
+    except (tarfile.TarError, OSError) as e:
+        raise HTTPException(status_code=500, detail=f"Bad backup archive: {e}")
+
+
 def _save_member(tar: tarfile.TarFile):
     """The main save entry inside a backup archive (UUID-named, not the preview)."""
     for member in tar.getmembers():
@@ -864,7 +901,8 @@ async def game_detail(name: str, request: Request):
     uuid = _resolve_uuid(folder)
     return {
         "name": name,
-        "turns": _turns_of(folder),
+        "turns": _turns_of(folder),          # legacy: уникальные номера ходов
+        "snapshots": _snapshots_of(folder),  # полная хронология (с рестартами)
         "currentGameId": uuid,
         "hasCurrent": _has_live_save(uuid),
     }
@@ -875,6 +913,8 @@ async def game_state(
     name: str,
     request: Request,
     turn: str = Query(..., description='Turn number, or "current" for the live save'),
+    snap: int | None = Query(None, description="Snapshot idx (chronological, precise "
+                             "even after restarts); takes precedence over turn"),
 ):
     if not _spectate_allowed(name, request):
         raise HTTPException(status_code=403, detail="Game is not finished")
@@ -889,6 +929,11 @@ async def game_state(
             raise HTTPException(status_code=404, detail=str(e))
         return _build_state(save, uuid, expose_player_id=True,
                             pid_fallback=_civ_player_ids_from_backup(folder))
+    # Точная адресация по snap-idx (различает одинаковые номера ходов после
+    # рестарта); при отсутствии — легаси-путь по номеру хода.
+    if snap is not None:
+        save = _extract_backup_save_by_idx(folder, snap)
+        return _build_state(save, f"{name}#{snap}", expose_player_id=True)
     if not turn.isdigit():
         raise HTTPException(status_code=400, detail="turn must be a number or 'current'")
     save = _extract_backup_save(folder, int(turn))
