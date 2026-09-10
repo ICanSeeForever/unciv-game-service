@@ -497,6 +497,32 @@ def _trade_key(trade: dict) -> str:
     return "|".join(keys)
 
 
+def _offer_label(offer: dict) -> str:
+    """Человекочитаемое описание оффера (для лога «что именно в сделке»)."""
+    name = str(offer.get("name") or "?")
+    typ = str(offer.get("type") or "")
+    amt = int(offer.get("amount") or 0)
+    dur = int(offer.get("duration") or 0)
+    if typ == "Gold":
+        return f"{amt} золота"
+    if typ == "Gold_Per_Turn":
+        return f"{amt} золота/ход" + (f" ({dur} х.)" if dur else "")
+    label = name if amt <= 1 else f"{name} ×{amt}"
+    return label + (f" ({dur} х.)" if dur else "")
+
+
+def _trade_desc(trade: dict, civ_a: str, civ_b: str) -> list:
+    """Список строк «кто что отдаёт» по значимым офферам сделки (без служебных)."""
+    out = []
+    for o in (trade.get("ourOffers") or []):
+        if o.get("name") not in _NON_TRADE_OFFERS:
+            out.append(f"{civ_a} отдаёт: {_offer_label(o)}")
+    for o in (trade.get("theirOffers") or []):
+        if o.get("name") not in _NON_TRADE_OFFERS:
+            out.append(f"{civ_b} отдаёт: {_offer_label(o)}")
+    return out
+
+
 def _is_meaningful_trade(trade: dict) -> bool:
     """True, если в сделке есть хоть один «настоящий» оффер (ресурс, золото,
     юнит и т.п.). Сделки, состоящие ТОЛЬКО из служебных офферов
@@ -540,8 +566,11 @@ def _extract_diplomacy_detailed(save: dict) -> list:
             flag_names = sorted(flags.keys()) if isinstance(flags, dict) else []
             at_war = status == "War" or "DeclaredWar" in flag_names
             trades = row.get("trades") if isinstance(row.get("trades"), list) else []
-            trade_keys = sorted({_trade_key(t) for t in trades
-                                 if isinstance(t, dict) and _is_meaningful_trade(t)})
+            meaningful = [t for t in trades if isinstance(t, dict) and _is_meaningful_trade(t)]
+            trade_keys = sorted({_trade_key(t) for t in meaningful})
+            trade_desc = []
+            for t in meaningful:
+                trade_desc += _trade_desc(t, nation, other)
             result.append({
                 "civ_a": nation,
                 "civ_b": other,
@@ -551,6 +580,7 @@ def _extract_diplomacy_detailed(save: dict) -> list:
                 "flags": flag_names,
                 "trade_count": len(trade_keys),
                 "trades": trade_keys,
+                "trade_desc": trade_desc,
             })
     return result
 
@@ -605,6 +635,7 @@ def _extract_ai_diplomacy_violations(save: dict) -> list:
             "reasons": sorted(set(reasons)),
             "status": row.get("status"),
             "trade_keys": row.get("trades") or [],
+            "trade_desc": row.get("trade_desc") or [],
         })
     return violations
 
