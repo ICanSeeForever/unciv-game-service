@@ -485,8 +485,11 @@ def _civ_meta(save: dict) -> dict[str, dict]:
 
 
 def _trade_offer_key(offer: dict) -> str:
-    """Stable key for a trade offer (name + type + amount); -1 duration → 0."""
-    return f"{offer.get('name')}|{offer.get('type')}|{int(offer.get('amount') or 0)}|{int(offer.get('duration') or 0)}"
+    """Стабильный ключ оффера: name + type + amount. Длительность (duration) НЕ
+    включаем — у длящейся сделки она тикает каждый ход, и если бы входила в ключ,
+    одна и та же сделка порождала бы новый ключ каждый ход (baseline никогда бы не
+    совпал → алерт «торговля с ИИ» повторялся бы ежеходно)."""
+    return f"{offer.get('name')}|{offer.get('type')}|{int(offer.get('amount') or 0)}"
 
 
 def _trade_key(trade: dict) -> str:
