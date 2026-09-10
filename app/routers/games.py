@@ -497,6 +497,17 @@ def _trade_key(trade: dict) -> str:
     return "|".join(keys)
 
 
+def _is_meaningful_trade(trade: dict) -> bool:
+    """True, если в сделке есть хоть один «настоящий» оффер (ресурс, золото,
+    юнит и т.п.). Сделки, состоящие ТОЛЬКО из служебных офферов
+    (``_NON_TRADE_OFFERS``: белый мир / открытые границы), торговлей не
+    считаются: Peace Treaty — разрешён, Open Borders ловится через
+    ``hasOpenBorders``. Так в ``trade_keys`` не попадает белый мир (иначе он
+    давал бы ложный «торговля с ИИ» на всю длительность мирного договора)."""
+    offers = (trade.get("ourOffers") or []) + (trade.get("theirOffers") or [])
+    return any(o.get("name") not in _NON_TRADE_OFFERS for o in offers)
+
+
 def _extract_diplomacy_detailed(save: dict) -> list:
     """Full diplomacy rows including flags, trades, open borders.
 
@@ -529,7 +540,8 @@ def _extract_diplomacy_detailed(save: dict) -> list:
             flag_names = sorted(flags.keys()) if isinstance(flags, dict) else []
             at_war = status == "War" or "DeclaredWar" in flag_names
             trades = row.get("trades") if isinstance(row.get("trades"), list) else []
-            trade_keys = sorted({_trade_key(t) for t in trades if isinstance(t, dict)})
+            trade_keys = sorted({_trade_key(t) for t in trades
+                                 if isinstance(t, dict) and _is_meaningful_trade(t)})
             result.append({
                 "civ_a": nation,
                 "civ_b": other,
