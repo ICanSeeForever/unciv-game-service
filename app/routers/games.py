@@ -431,7 +431,81 @@ async def game_cities(
 # ---------------------------------------------------------------------------
 
 def _extract_diplomacy(save: dict) -> list:
-    """Return all war/peace relations between civs."""
+    """Return all war/peace relations between civs (legacy compact shape)."""
+    result = []
+    for row in _extract_diplomacy_detailed(save):
+        result.append({
+            "civ_a": row["civ_a"],
+            "civ_b": row["civ_b"],
+            "status": row.get("status"),
+            "at_war": row["at_war"],
+        })
+    return result
+
+
+_FORBIDDEN_AI_DIPLO_FLAGS = frozenset({
+    "DeclarationOfFriendship",
+    "DefensivePact",
+    "ResearchAgreement",
+    "ProvideMilitaryUnit",
+})
+
+# Торговые офферы, которые входят в сделку (TradeOfferType + Constants.*).
+# Peace Treaty — разрешена (белый мир); Open Borders — отдельно (hasOpenBorders).
+_TRADE_OFFER_NAMES = frozenset({
+    "Open Borders",
+    "Research Agreement",
+    "Defensive Pact",
+    "Peace Treaty",
+    "Accept Embassy",
+})
+
+_AI_DIPLO_FLAG_LABELS = {
+    "DeclarationOfFriendship": "декларация дружбы",
+    "DefensivePact": "оборонительный союз",
+    "ResearchAgreement": "научное соглашение",
+    "ProvideMilitaryUnit": "дар военного юнита",
+    "OpenBorders": "открытые границы",
+    "ActiveTrade": "активная сделка",
+    "DefensivePactStatus": "статус оборонительного союза",
+}
+
+
+def _civ_meta(save: dict) -> dict[str, dict]:
+    """Map civName -> {player_type, is_city_state}."""
+    meta: dict[str, dict] = {}
+    for civ in save.get("civilizations", []):
+        name = civ.get("civName")
+        if not name:
+            continue
+        meta[name] = {
+            "player_type": civ.get("playerType", "AI"),
+            "is_city_state": name in CITY_STATES,
+        }
+    return meta
+
+
+def _trade_offer_key(offer: dict) -> str:
+    """Stable key for a trade offer (name + type + amount); -1 duration → 0."""
+    return f"{offer.get('name')}|{offer.get('type')}|{int(offer.get('amount') or 0)}|{int(offer.get('duration') or 0)}"
+
+
+def _trade_key(trade: dict) -> str:
+    """Stable key for a whole Trade (set of both sides' offers)."""
+    keys = sorted(
+        _trade_offer_key(o) for o in (trade.get("ourOffers") or []) + (trade.get("theirOffers") or [])
+    )
+    return "|".join(keys)
+
+
+def _extract_diplomacy_detailed(save: dict) -> list:
+    """Full diplomacy rows including flags, trades, open borders.
+
+    ``trades`` — детализированный список сделок (хеши офферов) для трекеров,
+    которые должны отличать «сделка появилась на этом ходу» от «была с прошлых
+    ходов» (правило: нарушение, только если она появилась после того, как
+    нация стала управляться ИИ).
+    """
     result = []
     seen = set()
     for civ in save.get("civilizations", []):
@@ -453,16 +527,75 @@ def _extract_diplomacy(save: dict) -> list:
             seen.add(pair)
             status = row.get("diplomaticStatus")
             flags = row.get("flagsCountdown") or {}
-            at_war = status == "War" or (
-                isinstance(flags, dict) and "DeclaredWar" in flags
-            )
+            flag_names = sorted(flags.keys()) if isinstance(flags, dict) else []
+            at_war = status == "War" or "DeclaredWar" in flag_names
+            trades = row.get("trades") if isinstance(row.get("trades"), list) else []
+            trade_keys = sorted({_trade_key(t) for t in trades if isinstance(t, dict)})
             result.append({
                 "civ_a": nation,
                 "civ_b": other,
                 "status": status,
                 "at_war": at_war,
+                "has_open_borders": bool(row.get("hasOpenBorders")),
+                "flags": flag_names,
+                "trade_count": len(trade_keys),
+                "trades": trade_keys,
             })
     return result
+
+
+def _extract_ai_diplomacy_violations(save: dict) -> list:
+    """Human↔AI (non-CS) diplomacy that is not war / plain white peace.
+
+    Iron League: diplomatic interaction with AI is forbidden except declaring
+    war or concluding white peace. Сделки, заключённые до того, как нация
+    стала управляться ИИ, — не нарушение: это отслеживается трекером по
+    моменту появления сделки (см. ``trades`` в ``_extract_diplomacy_detailed``).
+    """
+    meta = _civ_meta(save)
+    violations: list[dict] = []
+    for row in _extract_diplomacy_detailed(save):
+        a, b = row["civ_a"], row["civ_b"]
+        ma, mb = meta.get(a), meta.get(b)
+        if not ma or not mb:
+            continue
+        if ma["is_city_state"] or mb["is_city_state"]:
+            continue
+        a_human = ma["player_type"] == "Human"
+        b_human = mb["player_type"] == "Human"
+        if a_human == b_human:
+            # Human-Human or AI-AI
+            continue
+        human = a if a_human else b
+        ai = b if a_human else a
+        if row["at_war"]:
+            # War itself is allowed; ignore wartime flags.
+            continue
+
+        reasons: list[str] = []
+        for flag in row.get("flags") or []:
+            if flag in _FORBIDDEN_AI_DIPLO_FLAGS:
+                reasons.append(_AI_DIPLO_FLAG_LABELS.get(flag, flag))
+        if row.get("has_open_borders"):
+            reasons.append(_AI_DIPLO_FLAG_LABELS["OpenBorders"])
+        if int(row.get("trade_count") or 0) > 0:
+            reasons.append(_AI_DIPLO_FLAG_LABELS["ActiveTrade"])
+        if row.get("status") == "DefensivePact":
+            reasons.append(_AI_DIPLO_FLAG_LABELS["DefensivePactStatus"])
+
+        if not reasons:
+            continue
+        # Stable key for de-dupe in the bot
+        key = f"{human}|{ai}|{'+'.join(sorted(set(reasons)))}"
+        violations.append({
+            "key": key,
+            "human": human,
+            "ai": ai,
+            "reasons": sorted(set(reasons)),
+            "status": row.get("status"),
+            "trade_keys": row.get("trades") or [],
+        })
+    return violations
 
 
 @router.get(
@@ -471,11 +604,14 @@ def _extract_diplomacy(save: dict) -> list:
     description=(
         "Returns all civ-pair diplomatic relations. `at_war=true` when "
         "`diplomaticStatus=War` or `DeclaredWar` flag is active. "
-        "Used by diplomacy_war_guard to enforce war-declaration rules."
+        "Used by diplomacy_war_guard to enforce war-declaration rules. "
+        "Pass `detailed=true` for flags, open borders, trade counts and "
+        "the per-trade stable keys used by the human↔AI trade tracker."
     ),
 )
 async def game_diplomacy(
     game_id: str,
+    detailed: bool = Query(default=False, description="Include flags/trades/open borders"),
     host: str | None = Query(default=None, description=_HOST_DESC),
 ):
     _validate_game_id(game_id)
@@ -483,6 +619,15 @@ async def game_diplomacy(
         save = await get_save_dict(game_id, host)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    if detailed:
+        relations = _extract_diplomacy_detailed(save)
+        violations = _extract_ai_diplomacy_violations(save)
+        return {
+            "game_id": game_id,
+            "count": len(relations),
+            "relations": relations,
+            "ai_diplomacy_violations": violations,
+        }
     relations = _extract_diplomacy(save)
     return {"game_id": game_id, "count": len(relations), "relations": relations}
 
@@ -1173,6 +1318,11 @@ def _extract_snapshot(save: dict) -> dict:
         "human_units": human_units,
         "city_buildings": city_buildings,
         "capitals": capitals,
+        # Human↔AI diplomacy violations (Iron League). ``trade_keys`` — хеши
+        # активных сделок; трекер отслеживает их появление, чтобы не алертить
+        # по сделкам, заключённым до того, как нация стала управляться ИИ.
+        "ai_diplomacy_violations": _extract_ai_diplomacy_violations(save),
+        "diplomacy_detailed": _extract_diplomacy_detailed(save),
     }
 
 
