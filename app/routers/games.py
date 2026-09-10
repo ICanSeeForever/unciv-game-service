@@ -450,14 +450,13 @@ _FORBIDDEN_AI_DIPLO_FLAGS = frozenset({
     "ProvideMilitaryUnit",
 })
 
-# Торговые офферы, которые входят в сделку (TradeOfferType + Constants.*).
-# Peace Treaty — разрешена (белый мир); Open Borders — отдельно (hasOpenBorders).
-_TRADE_OFFER_NAMES = frozenset({
-    "Open Borders",
-    "Research Agreement",
-    "Defensive Pact",
+# Офферы, которые НЕ считаются «торговлей» для трекера human↔AI:
+# Peace Treaty — разрешённый белый мир (в Unciv он лежит в ``trades`` на всю
+# длительность мирного договора, DiplomacyManager.makePeaceOneSide),
+# Open Borders — отслеживается отдельно через ``hasOpenBorders``.
+_NON_TRADE_OFFERS = frozenset({
     "Peace Treaty",
-    "Accept Embassy",
+    "Open Borders",
 })
 
 _AI_DIPLO_FLAG_LABELS = {
