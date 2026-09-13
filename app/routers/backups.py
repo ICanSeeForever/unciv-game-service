@@ -68,16 +68,20 @@ def _count_military_deaths(archives: list[Path], until_turn: int | None) -> dict
     """Пройти по бэкапам и посчитать потери боевых юнитов по владельцу.
 
     Все города-государства сворачиваются в один псевдо-владелец ``cs`` — как в
-    старом civ_bot (core рендерит его как «Города-государства»). ГГ определяются
-    напрямую по объекту цивилизации в сейве (наличие city-state-полей вроде
-    ``cityStatePersonality``), а не по ростеру игроков — ростер в стартовых сейвах
-    иногда содержит мусор (имя ГГ в ``chosenCiv``). Такой способ надёжен и для
-    ванильного набора ГГ, и для модовского, без хардкода имён. Варвары не
-    сворачиваются. Если ГГ в сейвах не найдены — сворачивание не выполняется.
+    старом civ_bot (core рендерит его как «Города-государства»). Варвары не
+    сворачиваются, мажоры (нации игроков) показываются по отдельности.
+
+    Мажор определяется по объекту цивилизации в сейве: у него есть ``playerType``
+    и НЕТ city-state-полей (``cityStatePersonality`` и т.п.). Всё остальное (кроме
+    варваров) — город-государство. Такой признак надёжен и для ванильного набора
+    ГГ, и для модовского, без хардкода имён; он корректно отрабатывает как чистых
+    ИИ-ГГ (без ``playerType``), так и ГГ, случайно попавших в ростер стартового
+    сейва (у них остаются city-state-поля). Если мажоров в сейвах не нашли —
+    сворачивание не выполняется (fallback: показываем всех как есть).
     """
     totals: dict[str, int] = {}
     prev_units: list[dict] = []
-    city_states: set[str] = set()
+    majors: set[str] = set()
 
     for archive in archives:
         save, current_turn = _parse_tar_save(archive)
@@ -88,8 +92,11 @@ def _count_military_deaths(archives: list[Path], until_turn: int | None) -> dict
             if not isinstance(civ, dict):
                 continue
             name = civ.get("civName")
-            if name and name != "Barbarians" and any(k in civ for k in _CITY_STATE_MARKERS):
-                city_states.add(name)
+            if not name or name == "Barbarians":
+                continue
+            has_cs_marker = any(k in civ for k in _CITY_STATE_MARKERS)
+            if not has_cs_marker and "playerType" in civ:
+                majors.add(name)
 
         tiles = (save.get("tileMap") or {}).get("tileList") or []
         curr_units = []
@@ -110,11 +117,11 @@ def _count_military_deaths(archives: list[Path], until_turn: int | None) -> dict
         if until_turn is not None and current_turn is not None and current_turn >= until_turn:
             break
 
-    # Свернуть всех выявленных ГГ в единый ключ ``cs`` (варвары/мажоры — как есть).
-    if city_states:
+    # Свернуть всех не-мажоров (кроме варваров) в единый ключ ``cs``.
+    if majors:
         folded: dict[str, int] = {}
         for owner, count in totals.items():
-            key = "cs" if owner in city_states else owner
+            key = owner if (owner == "Barbarians" or owner in majors) else "cs"
             folded[key] = folded.get(key, 0) + count
         return folded
 
