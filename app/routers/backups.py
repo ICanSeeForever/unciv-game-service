@@ -53,14 +53,29 @@ def _parse_tar_save(archive: Path) -> tuple[dict | None, int | None]:
 
 
 def _count_military_deaths(archives: list[Path], until_turn: int | None) -> dict[str, int]:
-    """Пройти по бэкапам и посчитать потери боевых юнитов по владельцу."""
+    """Пройти по бэкапам и посчитать потери боевых юнитов по владельцу.
+
+    Все города-государства (не варвары и не мажоры-игроки) сворачиваются в один
+    псевдо-владелец ``cs`` — как в старом civ_bot (core рендерит его как
+    «Города-государства»). Набор ГГ определяется по ростеру игроков из сейва
+    (``gameParameters.players[].chosenCiv``), поэтому корректно работает и для
+    ванильного набора ГГ, и для модовского — без хардкода имён. Если ростер в
+    сейвах отсутствует, сворачивание не выполняется (fallback: показываем всех).
+    """
     totals: dict[str, int] = {}
     prev_units: list[dict] = []
+    majors: set[str] = set()
 
     for archive in archives:
         save, current_turn = _parse_tar_save(archive)
         if save is None:
             continue
+
+        for p in (save.get("gameParameters") or {}).get("players") or []:
+            if isinstance(p, dict):
+                civ = p.get("chosenCiv")
+                if civ and civ != "Spectator":
+                    majors.add(civ)
 
         tiles = (save.get("tileMap") or {}).get("tileList") or []
         curr_units = []
@@ -80,6 +95,15 @@ def _count_military_deaths(archives: list[Path], until_turn: int | None) -> dict
         prev_units = curr_units
         if until_turn is not None and current_turn is not None and current_turn >= until_turn:
             break
+
+    # Свернуть все ГГ в единый ключ ``cs``. ГГ = владелец, который не варвар и
+    # не мажор-игрок (по ростеру сейва). Без ростера majors пуст — не сворачиваем.
+    if majors:
+        folded: dict[str, int] = {}
+        for owner, count in totals.items():
+            key = owner if (owner == "Barbarians" or owner in majors) else "cs"
+            folded[key] = folded.get(key, 0) + count
+        return folded
 
     return totals
 
