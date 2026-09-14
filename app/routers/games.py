@@ -17,7 +17,7 @@ from app.game.fetcher import (
     delete_game, patch_prophet, load_spectate_backup, write_save, write_preview,
     create_backup, restore_backup, make_single_player,
     store_save, store_preview, get_save_raw, get_preview_raw,
-    extract_backup_contents,
+    extract_backup_contents, extract_state_files,
 )
 from app.game.parser import decode_save, encode_save, regenerate_preview
 from app.game import remote
@@ -785,6 +785,8 @@ class BackupRequest(BaseModel):
     max_keep: int = 30
     offsite: bool = False  # дополнительно отправить архив на второй сервер (neth)
     host: str | None = None  # внешний хост: содержимое тянем через API, архив — локально
+    # core-состояние сессии (name→base64): кладётся в тот же архив рядом с сейвом
+    state_files: dict[str, str] | None = None
 
 
 async def _send_offsite(archive_path: str, game: str | None = None) -> bool:
@@ -838,11 +840,15 @@ async def create_game_backup(game_id: str, body: BackupRequest):
             save_text = await get_save_raw(game_id, body.host)
         except FileNotFoundError as e:
             raise HTTPException(status_code=404, detail=str(e))
+    state_files = None
+    if body.state_files:
+        import base64
+        state_files = {k: base64.b64decode(v) for k, v in body.state_files.items()}
     try:
         name = await loop.run_in_executor(None, lambda: create_backup(
             game_id, backup_dir=backup_dir, turn=body.turn,
             nation=body.nation, max_keep=body.max_keep,
-            save_text=save_text))
+            save_text=save_text, state_files=state_files))
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     offsite_ok = False
@@ -1063,6 +1069,42 @@ async def restore_game(game_id: str, body: RestoreRequest):
                             uid=body.uid, password=body.password)
         result["preview"] = True
     return {"ok": True, "game_id": game_id, **result}
+
+
+class ExtractStateRequest(BaseModel):
+    backup_name: str
+    subdirectory: str | None = None
+
+
+@router.post(
+    "/backup/state",
+    summary="Извлечь core-состояние (game_state/params/pacts) из архива бэкапа",
+    description=(
+        "Отдаёт core-файлы состояния, лежащие в общем архиве рядом с сейвом, "
+        "как {name: base64}. Пусто — если это старый save-only архив. Нужно core "
+        "на откате, чтобы восстановить свою половину из объединённого архива."
+    ),
+)
+async def backup_extract_state(body: ExtractStateRequest):
+    from pathlib import Path as _Path
+    import base64
+    sub = (body.subdirectory or "").strip("/")
+    if sub and ".." in sub.split("/"):
+        raise HTTPException(status_code=400, detail="bad subdirectory")
+    backup_dir = settings.get_backup_path()
+    if sub:
+        backup_dir = f"{backup_dir}/{sub}"
+    backup_file = _Path(backup_dir) / body.backup_name
+    if not backup_file.is_file():
+        raise HTTPException(status_code=404, detail=f"Backup not found: {backup_file}")
+    loop = asyncio.get_event_loop()
+    try:
+        files = await loop.run_in_executor(
+            None, lambda: extract_state_files(backup_file))
+    except (ValueError, tarfile.TarError) as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    return {"ok": True, "files": {k: base64.b64encode(v).decode("ascii")
+                                  for k, v in files.items()}}
 
 
 # ---------------------------------------------------------------------------

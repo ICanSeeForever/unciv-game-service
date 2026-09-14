@@ -146,9 +146,19 @@ def _tar_add_text(tar: tarfile.TarFile, arcname: str, text: str) -> None:
     tar.addfile(info, io.BytesIO(data))
 
 
+def _tar_add_bytes(tar: tarfile.TarFile, arcname: str, data: bytes) -> None:
+    """Add in-memory bytes to an open tar (для core-файлов состояния)."""
+    import io
+    info = tarfile.TarInfo(name=arcname)
+    info.size = len(data)
+    info.mtime = int(datetime.now().timestamp())
+    tar.addfile(info, io.BytesIO(data))
+
+
 def create_backup(game_id: str, *, backup_dir: str, turn=None,
                   nation: str | None = None, max_keep: int = 30,
-                  save_text: str | None = None) -> str:
+                  save_text: str | None = None,
+                  state_files: dict[str, bytes] | None = None) -> str:
     """Tar the save into ``backup_dir`` as ``{turn}_{nation}_{ts}.tar.gz``.
 
     Превью в архив НЕ кладём: оно — обрезанная копия сейва и при
@@ -160,6 +170,11 @@ def create_backup(game_id: str, *, backup_dir: str, turn=None,
 
     ``save_text`` задан (внешний хост: файла нет локально) → архив собирается из
     переданного содержимого, а не из MultiplayerFiles.
+
+    ``state_files`` (name→bytes) — core-состояние сессии (``game_state.dat``/
+    ``game_params.json``/``pacts.db``), кладётся россыпью в тот же архив рядом с
+    сейвом. Так один архив держит и сейв, и состояние (раскладка монолита);
+    читатели сейва (``_parse_tar_save``/``restore_backup``) эти файлы пропускают.
     """
     if save_text is None:
         save = _local_path(game_id)
@@ -174,6 +189,8 @@ def create_backup(game_id: str, *, backup_dir: str, turn=None,
     archive = bdir / name
     with tarfile.open(archive, "w:gz") as tar:
         _tar_add_text(tar, game_id, save_text)
+        for fname, data in (state_files or {}).items():
+            _tar_add_bytes(tar, os.path.basename(fname), data)
     if max_keep and max_keep > 0:
         files = sorted(
             [p for p in bdir.iterdir() if p.is_file() and p.name.endswith(".tar.gz")],
@@ -204,6 +221,21 @@ def write_preview(game_id: str, raw: str) -> None:
     tmp.rename(path)
 
 
+# core-файлы состояния сессии, которые теперь лежат в том же архиве, что и сейв.
+# Читатели сейва должны их пропускать (иначе примут state за сейв → порча игры).
+STATE_FILES = ("game_state.dat", "game_params.json", "pacts.db")
+
+
+def _is_save_member(member: tarfile.TarInfo) -> bool:
+    """Member — это игровой сейв (а не preview и не core-состояние)."""
+    if not member.isfile():
+        return False
+    base = os.path.basename(member.name)
+    if base.endswith("_Preview") or base in STATE_FILES:
+        return False
+    return True
+
+
 def restore_backup(backup_file: Path, target_game_id: str, *,
                    safety_backup: bool = True) -> dict:
     """Восстановить сейв (+preview) из бэкап-архива в живую игру target_game_id.
@@ -225,10 +257,8 @@ def restore_backup(backup_file: Path, target_game_id: str, *,
     save_text: str | None = None
     with tarfile.open(backup_file, "r:gz") as tar:
         for member in tar.getmembers():
-            if not member.isfile():
-                continue
-            if os.path.basename(member.name).endswith("_Preview"):
-                continue  # архивное превью игнорируем — генерим из сейва
+            if not _is_save_member(member):
+                continue  # preview/core-состояние — не сейв
             extracted = tar.extractfile(member)
             if extracted is None:
                 continue
@@ -256,10 +286,8 @@ def extract_backup_contents(backup_file: Path) -> dict[str, str | None]:
     save_text: str | None = None
     with tarfile.open(backup_file, "r:gz") as tar:
         for member in tar.getmembers():
-            if not member.isfile():
-                continue
-            if os.path.basename(member.name).endswith("_Preview"):
-                continue  # архивное превью игнорируем — генерим из сейва
+            if not _is_save_member(member):
+                continue  # preview/core-состояние — не сейв
             extracted = tar.extractfile(member)
             if extracted is None:
                 continue
@@ -267,6 +295,28 @@ def extract_backup_contents(backup_file: Path) -> dict[str, str | None]:
     if save_text is None:
         raise ValueError("no save file in backup archive")
     return {"save_text": save_text, "preview_text": None}
+
+
+def extract_state_files(backup_file: Path) -> dict[str, bytes]:
+    """Достать core-файлы состояния (STATE_FILES) из архива, не пиша на диск.
+
+    Возвращает ``{name: bytes}`` для тех из ``game_state.dat``/``game_params.json``/
+    ``pacts.db``, что есть в архиве (может быть пусто — старый save-only архив).
+    Используется core на откате, чтобы восстановить свою половину из общего архива.
+    """
+    if not backup_file.is_file():
+        raise FileNotFoundError(f"Backup not found: {backup_file}")
+    out: dict[str, bytes] = {}
+    with tarfile.open(backup_file, "r:gz") as tar:
+        for member in tar.getmembers():
+            if not member.isfile():
+                continue
+            base = os.path.basename(member.name)
+            if base in STATE_FILES:
+                f = tar.extractfile(member)
+                if f is not None:
+                    out[base] = f.read()
+    return out
 
 
 def make_single_player(save: dict, nations: list[str]) -> dict:
