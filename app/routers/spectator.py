@@ -592,7 +592,17 @@ async def spectator_state(game_id: str):
     try:
         save = await get_save_dict(game_id)
     except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        # Локально нет — пробуем внешний Unciv-сервер (uncivserver.xyz). GET идёт
+        # через egress-прокси (обход Cloudflare-WAF). Для админского открытия
+        # произвольного id в реплее: сначала MultiplayerFiles, затем uncivserver.
+        if not settings.uncivserver_url:
+            raise HTTPException(status_code=404, detail=str(e))
+        try:
+            save = await get_save_dict(game_id, host=settings.uncivserver_url)
+        except Exception as ext:  # noqa: BLE001
+            raise HTTPException(
+                status_code=404,
+                detail=f"Сейв не найден ни локально, ни на uncivserver: {ext}")
     return _build_state(save, game_id)
 
 

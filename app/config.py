@@ -8,6 +8,10 @@ class Settings(BaseSettings):
     # Default Unciv MP server (can be overridden per-request via config body)
     game_host: str = ""
 
+    # Внешний Unciv-сервер для фолбэка чтения сейва по id, когда его нет в
+    # локальных MultiplayerFiles (админское открытие произвольной игры в реплее).
+    uncivserver_url: str = "https://uncivserver.xyz"
+
     # Launcher: "local" or "ssh"
     launcher_type: str = "local"
 
