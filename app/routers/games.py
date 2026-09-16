@@ -1557,6 +1557,14 @@ class PatchSpeedRequest(BaseModel):
     host: str | None = None
 
 
+class PatchStatsRequest(BaseModel):
+    showCharts: bool
+    showCivilizationStats: bool
+    showDemographics: bool
+    showRankings: bool
+    host: str | None = None
+
+
 @router.post("/{game_id}/patch-speed", summary="Patch gameParameters.speed in save and preview")
 async def patch_speed(game_id: str, body: PatchSpeedRequest):
     _validate_game_id(game_id)
@@ -1573,6 +1581,32 @@ async def patch_speed(game_id: str, body: PatchSpeedRequest):
     except Exception:
         pass
     return {"ok": True, "speed": body.speed}
+
+
+@router.post("/{game_id}/patch-stats",
+             summary="Patch stats-display flags in save and preview")
+async def patch_stats(game_id: str, body: PatchStatsRequest):
+    """Обновляет 4 флага отображения статистики в gameParameters сейва и preview."""
+    _validate_game_id(game_id)
+    flags = {
+        "showCharts": body.showCharts,
+        "showCivilizationStats": body.showCivilizationStats,
+        "showDemographics": body.showDemographics,
+        "showRankings": body.showRankings,
+    }
+    try:
+        save = await get_save_dict(game_id, body.host)
+        save.setdefault("gameParameters", {}).update(flags)
+        await store_save(game_id, encode_save(save), host=body.host)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    try:
+        preview = await get_preview_dict(game_id, body.host)
+        preview.setdefault("gameParameters", {}).update(flags)
+        await store_preview(game_id, encode_save(preview), host=body.host)
+    except Exception:
+        pass
+    return {"ok": True, **flags}
 
 
 @router.get("/{game_id}/prophet", summary="Great Prophet purchase counts per nation")
