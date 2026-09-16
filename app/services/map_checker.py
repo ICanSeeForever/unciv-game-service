@@ -7,6 +7,12 @@ from app.config import settings
 from app.game.static_data import get_city_states, get_luxuries, get_marine_civs
 
 
+# Природные чудеса, недопустимые на дуэльных (2 игрока) картах: слишком сильно
+# ломают баланс 1-на-1. Если хоть одно есть на любом тайле — карту рестартим.
+# Поле на тайле — tile["naturalWonder"] (одиночная строка), см. цикл ниже.
+_DUEL_BANNED_WONDERS = frozenset({"El Dorado", "Fountain of Youth"})
+
+
 @dataclass
 class MapCheckResult:
     ok: bool
@@ -130,6 +136,7 @@ def check_map(
     count_coast = 0
     count_tiles = 0
     tiles_dict: dict[tuple, dict] = {}
+    banned_wonders_found: set[str] = set()
 
     for tile in file_dict.get("tileMap", {}).get("tileList", []):
         base = tile.get("baseTerrain", "")
@@ -138,6 +145,11 @@ def check_map(
         elif base == "Coast":
             count_coast += 1
         count_tiles += 1
+
+        # Природное чудо тайла (для дуэльного бана — проверяется ниже по числу игроков).
+        wonder = tile.get("naturalWonder")
+        if wonder in _DUEL_BANNED_WONDERS:
+            banned_wonders_found.add(wonder)
 
         pos = tile.get("position", {})
         x, y = pos.get("x", 0), pos.get("y", 0)
@@ -237,6 +249,12 @@ def check_map(
         )
     if near_edge:
         issues.append(f"Нации у края карты (≤1 тайла от границы): {', '.join(near_edge)}")
+    # Дуэль (ровно 2 игрока): бан сильных природных чудес — если есть, рестартим карту.
+    if player_count == 2 and banned_wonders_found:
+        issues.append(
+            "Запрещённые для дуэли природные чудеса на карте: "
+            + ", ".join(sorted(banned_wonders_found))
+        )
 
     avg_dist = sum(min_distances) / len(min_distances)
     median_dist = statistics.median(min_distances)
@@ -254,6 +272,7 @@ def check_map(
         "tiles": count_tiles,
         "land_pct": round((land / count_tiles * 100) if count_tiles else 0, 2),
         "players": player_count,
+        "duel_banned_wonders": sorted(banned_wonders_found),
         "world_wrap": world_wrap,
         "map_width": map_width,
         "distances": {
