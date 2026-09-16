@@ -109,6 +109,13 @@ async def game_info(
         "created_at": created_at,
         "players": players,
         "speed": game_params.get("speed"),
+        # Флаги отображения статистики — для вычисления текущего режима на сайте.
+        "stats_flags": {
+            "showCharts": bool(game_params.get("showCharts")),
+            "showCivilizationStats": bool(game_params.get("showCivilizationStats")),
+            "showDemographics": bool(game_params.get("showDemographics")),
+            "showRankings": bool(game_params.get("showRankings")),
+        },
         "version": {
             "text": created_with.get("text"),
             "number": created_with.get("number"),
