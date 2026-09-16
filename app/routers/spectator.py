@@ -584,7 +584,7 @@ def _civ_economy(save: dict) -> dict:
         "the base ruleset and mod list so the frontend can load the matching assets."
     ),
 )
-async def spectator_state(game_id: str):
+async def spectator_state(game_id: str, request: Request):
     if not _GAME_ID_RE.match(game_id):
         raise HTTPException(status_code=400, detail="Invalid game_id format")
     if game_id in _blocked_uuids():
@@ -603,7 +603,10 @@ async def spectator_state(game_id: str):
             raise HTTPException(
                 status_code=404,
                 detail=f"Сейв не найден ни локально, ни на uncivserver: {ext}")
-    return _build_state(save, game_id)
+    # playerId отдаём ТОЛЬКО по доверенному внутреннему заголовку от core (тот
+    # резолвит по нему сайт-ник и вырезает playerId). Публично userid не палим.
+    expose = request.headers.get("X-Resolve-Nicks") == "1"
+    return _build_state(save, game_id, expose_player_id=expose)
 
 
 def _civ_player_ids_from_backup(folder: Path) -> dict:
