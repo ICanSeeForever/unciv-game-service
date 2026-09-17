@@ -740,6 +740,10 @@ def _build_state(save: dict, game_id: str, *, expose_player_id: bool = False,
             "resource": tile.get("resource"),
             "resourceAmount": tile.get("resourceAmount") or 0,
             "improvement": tile.get("improvement"),
+            # Unciv Tile.improvementIsPillaged / roadIsPillaged — libGDX Json omits
+            # false defaults, so a set key means the improvement/road is pillaged.
+            "improvementIsPillaged": bool(tile.get("improvementIsPillaged")),
+            "roadIsPillaged": bool(tile.get("roadIsPillaged")),
             "naturalWonder": tile.get("naturalWonder"),
             "roadStatus": tile.get("roadStatus"),
             "owningCiv": owners.get((x, y)),
