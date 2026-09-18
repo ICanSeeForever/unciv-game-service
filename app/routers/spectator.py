@@ -704,6 +704,52 @@ def _remap_speed_for_engine(save: dict) -> None:
         gp["speed"] = repl
 
 
+# statsHistory encodes each turn's ranking snapshot as a run of <char><signed-int>
+# pairs; the char is RankingType.idForSerialization (Unciv RankingType.kt). Vanilla set
+# only — 'E' (TilesExplored) and any other non-vanilla chars are ignored.
+_DEMO_CHARS = {
+    "S": "Score", "N": "Population", "C": "Growth", "P": "Production",
+    "G": "Gold", "T": "Territory", "F": "Force", "H": "Happiness",
+    "W": "Technologies", "A": "Culture",
+}
+_DEMO_RE = re.compile(r"([A-Za-z])(-?\d+)")
+
+
+def _decode_demographics(snap: str) -> dict[str, int]:
+    """Decode a CivRankingHistory snapshot (e.g. ``S222N7C14G-9``) → {RankingType: value}."""
+    out: dict[str, int] = {}
+    for ch, num in _DEMO_RE.findall(snap or ""):
+        rt = _DEMO_CHARS.get(ch.upper())
+        if rt is not None:
+            out[rt] = int(num)
+    return out
+
+
+def _demographics_by_civ(save: dict) -> dict[str, dict[str, int]]:
+    """Per-civ ranking values as Unciv's Demographics screen reads them: the turn-start
+    snapshot recorded in ``statsHistory`` at the current turn, else the latest recorded
+    one. These lag the live rankings by design (frozen at the last completed turn), which
+    is why the demographics window must use them rather than the live ``ranking`` values."""
+    turns = int(save.get("turns") or 0)
+    out: dict[str, dict[str, int]] = {}
+    for civ in save.get("civilizations") or []:
+        name = civ.get("civName")
+        hist = civ.get("statsHistory")
+        if not name or not isinstance(hist, dict) or not hist:
+            continue
+        snap = hist.get(str(turns))
+        if not isinstance(snap, str):
+            try:
+                latest = max(hist.keys(), key=lambda k: int(k))
+            except (ValueError, TypeError):
+                continue
+            snap = hist.get(latest)
+        dec = _decode_demographics(snap if isinstance(snap, str) else "")
+        if dec:
+            out[name] = dec
+    return out
+
+
 def _build_state(save: dict, game_id: str, *, expose_player_id: bool = False,
                  pid_fallback: dict | None = None) -> dict:
     """Denormalize a decoded save into the viewer's spectator-state shape.
@@ -795,6 +841,8 @@ def _build_state(save: dict, game_id: str, *, expose_player_id: bool = False,
         city_stats: dict[tuple[str, str], dict] = {}
         # {(owner, "x,y")} of embarked units (land units on water) — drives boat sprites.
         embarked: set[tuple[str, str]] = set()
+        # Turn-snapshot ranking values (Demographics screen) from the save's statsHistory.
+        demo_by_civ = _demographics_by_civ(save)
         for name, inc in (income or {}).items():
             for xy in inc.get("embarked") or []:
                 embarked.add((name, xy))
@@ -828,6 +876,11 @@ def _build_state(save: dict, game_id: str, *, expose_player_id: bool = False,
                     }
                     civ_stats[name]["alive"] = bool(inc.get("alive", True))
                     civ_stats[name]["major"] = bool(inc.get("major", False))
+                    # Demographics uses frozen turn-snapshot values (per-stat fallback to
+                    # the live ranking when a stat is missing from the snapshot).
+                    dem = demo_by_civ.get(name)
+                    if dem:
+                        civ_stats[name]["demographics"] = dem
             for xy, cs in (inc.get("cities") or {}).items():
                 city_stats[(name, xy)] = cs
         # Overlay exact growth/starvation/production/strength onto each city plate.
