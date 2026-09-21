@@ -660,6 +660,61 @@ def _diplomacy(save: dict) -> dict:
     return {n: sorted(s) for n, s in war.items()}
 
 
+def _politics(save: dict) -> dict:
+    """Дип-отношения каждой цивы для окна «Политика» (порт Unciv
+    GlobalPoliticsOverviewTable.getPoliticsOfCivTable): войны, объявления дружбы,
+    осуждения, оборонительные пакты (со счётчиком оставшихся ходов) и союзные
+    город-государства. Отношения показываем ТОЛЬКО с ЖИВЫМИ цивами (как getKnownCivs,
+    который исключает уничтоженных — у кого не осталось городов).
+
+    Флаги из ``DiplomacyManager.flagsCountdown``: ``DeclarationOfFriendship`` /
+    ``Denunciation`` / ``DefensivePact`` — значение = оставшиеся ходы. Война: у Unciv
+    ``diplomaticStatus`` по умолчанию War, поэтому у воюющих ключ опущен → отсутствие
+    статуса = война."""
+    civs = save.get("civilizations") or []
+    skip = {"Spectator", _BARBARIANS}
+    # Живые — владеют хотя бы одним городом (уничтоженные исключаем).
+    alive = {c.get("civName") for c in civs
+             if c.get("civName") and (c.get("cities") or [])}
+
+    out: dict[str, dict] = {}
+    for c in civs:
+        name = c.get("civName")
+        if not name or name in skip:
+            continue
+        wars: list[str] = []
+        friends: list[dict] = []
+        denounced: list[dict] = []
+        pacts: list[dict] = []
+        for other, dm in (c.get("diplomacy") or {}).items():
+            if other in skip or other == name or other not in alive \
+                    or not isinstance(dm, dict):
+                continue
+            status = dm.get("diplomaticStatus")
+            flags = dm.get("flagsCountdown") or {}
+            if status is None or status == "War":
+                wars.append(other)
+            if "DeclarationOfFriendship" in flags:
+                friends.append({"civ": other,
+                                "turns": int(flags["DeclarationOfFriendship"])})
+            if "Denunciation" in flags:
+                denounced.append({"civ": other,
+                                  "turns": int(flags["Denunciation"])})
+            if "DefensivePact" in flags:
+                pacts.append({"civ": other,
+                              "turns": int(flags["DefensivePact"])})
+        out[name] = {"wars": sorted(wars), "friends": friends,
+                     "denounced": denounced, "pacts": pacts, "allies": []}
+    # Союзные город-государства: у CS поле ``allyCivName`` = мажор-союзник (это и
+    # есть авторитетный источник, порог influence считать не нужно).
+    for c in civs:
+        name = c.get("civName")
+        ally = c.get("allyCivName")
+        if ally and name in alive and ally in out:
+            out[ally]["allies"].append(name)
+    return out
+
+
 @functools.lru_cache(maxsize=1)
 def _engine_iron_speeds() -> tuple:
     """Валидные скорости из RekMOD Speeds.json движка + последняя Multiplayer-iron.
@@ -926,6 +981,7 @@ def _build_state(save: dict, game_id: str, *, expose_player_id: bool = False,
         "religions": religions,
         "currentPlayer": save.get("currentPlayer"),
         "diplomacy": _diplomacy(save),
+        "politics": _politics(save),
     }
 
 
