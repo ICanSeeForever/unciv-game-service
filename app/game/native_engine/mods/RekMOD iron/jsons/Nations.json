@@ -1255,7 +1255,8 @@
         "uniqueName": "Hellenic League",
         "uniques": [
             "[-50]% City-State Influence degradation",
-            "City-State Influence recovers at twice the normal rate"
+            "City-State Influence recovers at twice the normal rate",
+            "City-State territory always counts as friendly territory"
         ],
         "cities": [
             "Athens","Sparta","Corinth","Argos","Knossos","Mycenae","Pharsalos","Ephesus","Halicarnassus","Rhodes",
@@ -2475,7 +2476,7 @@
         "uniqueName": "The Good Fight",
         "uniques": [
             "[+2] Movement <for [Civilian] units> <in [your] tiles>",
-            "Comment [The first two Cities you settle (after your Capital) begin with +1 extra Citizen.]"
+            "[1] population [in this city] <upon founding a city> <when number of [Cities] is between [2] and [3]>"
         ],
         "cities": [
             "Malolos","Cavite El Viejo","San Juan del Monte","Pasig","Pateros","Tagig","Kalookan","San Pedro de Makati",
