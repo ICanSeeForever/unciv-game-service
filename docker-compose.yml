@@ -18,12 +18,12 @@ services:
       - ./Unciv.jar:/opt/unciv/Unciv.jar
       # Read-only: core-service user cards (playerId -> telegram nick) for the viewer.
       - /var/docker/compose/unciv-core-service/data:/data/core:ro
-    # Unciv.jar при генерации SYNC/локальных игр ходит на http://icanseeforever.com:8084.
-    # Резолв обеспечивает сетевой alias «icanseeforever.com» на контейнере
-    # unciv-server в civ_network (задан в его compose) — Docker DNS отдаёт его IP
-    # по имени сети, без хардкода IP и без hairpin на публичный адрес. Поэтому
-    # extra_hosts-пин здесь больше не нужен (он бы ещё и перебивал alias при смене
-    # IP unciv-server).
+    # Unciv.jar при генерации SYNC/локальных игр ходит на https://unciv.icanseeforever.com:8084
+    # (TLS терминирует host-nginx на :8084 → проксирует в контейнер unciv-server).
+    # Из контейнера имя резолвится публичным DNS в хост-IP, коннект идёт через
+    # hairpin на host-nginx (проверено: HTTPS-GC из контейнера → 200). Прежний
+    # plain-http alias «icanseeforever.com» на unciv-server больше не нужен для jar,
+    # но оставлен в его compose как безвредный.
     networks:
       - civ_network
 
