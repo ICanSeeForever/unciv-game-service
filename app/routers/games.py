@@ -1343,6 +1343,30 @@ def _parse_stats(stats) -> dict:
     return result
 
 
+def _extract_beliefs(save: dict) -> dict:
+    """Принятые верования по нации-основателю религии (для трекера турниров).
+
+    Верования выбирает основатель религии: пантеон/follower лежат в
+    ``followerBeliefs``, founder/enhancer — в ``founderBeliefs``. Ключ — ``civName``
+    основателя (``foundingCivName``), значение — список всех его верований.
+    """
+    out: dict[str, list[str]] = {}
+    for _key, r in (save.get("religions") or {}).items():
+        if not isinstance(r, dict):
+            continue
+        civ = r.get("foundingCivName")
+        if not civ:
+            continue
+        beliefs = list(r.get("founderBeliefs") or []) + list(r.get("followerBeliefs") or [])
+        if not beliefs:
+            continue
+        bucket = out.setdefault(civ, [])
+        for b in beliefs:
+            if b and b not in bucket:
+                bucket.append(b)
+    return out
+
+
 def _extract_snapshot(save: dict) -> dict:
     """Extract all tracker-relevant data in a single save scan."""
     human_nations: list[str] = []
@@ -1417,6 +1441,9 @@ def _extract_snapshot(save: dict) -> dict:
         # по сделкам, заключённым до того, как нация стала управляться ИИ.
         "ai_diplomacy_violations": _extract_ai_diplomacy_violations(save),
         "diplomacy_detailed": _extract_diplomacy_detailed(save),
+        # Принятые верования по нации-основателю (трекер турниров: Holy Warriors /
+        # Defender of the Faith).
+        "beliefs_by_nation": _extract_beliefs(save),
     }
 
 
