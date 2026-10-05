@@ -46,6 +46,58 @@ _prep_lock = threading.Lock()
 _ready: bool | None = None  # None = not yet attempted
 _jar_sig: tuple | None = None  # (mtime, size) of the jar the engine was built against
 
+# --- Live-mod sync -----------------------------------------------------------
+# The stat engine's base-ruleset mod ("RekMOD iron") must stay in lockstep with the
+# mod that REAL games actually run on, or the engine won't know newer game speeds
+# (e.g. a save on Multiplayer-iron-4.6.5) and income comes back empty ("счёт
+# недоступен"). Real games clone the mod fresh from GitHub into {jar_dir}/mods/ on
+# every start (launchers.local.clone_mod), so that directory is the live source of
+# truth — always current for whatever version is live. We build the engine from it
+# when present (falling back to the bundled copy baked into the image), and rebuild
+# whenever the live mod's Speeds.json content changes — mirroring the jar-swap
+# rebuild. Future version bumps flow in with zero manual Speeds.json syncing.
+_MOD_NAME = "RekMOD iron"
+_LIVE_MODS_DIR = Path(_JAR).parent / "mods"   # where clone_mod drops the live mod
+_mod_sig: str | None = None  # content sig of the LIVE mod the engine was built against
+
+
+def _live_mod_dir() -> Path | None:
+    """Live cloned mod dir if present and usable (has jsons/Speeds.json), else None.
+    Absent during the brief clone window and after a builtin-ruleset (G&K) game wiped
+    mods — callers must treat None as 'keep whatever we already have'."""
+    d = _LIVE_MODS_DIR / _MOD_NAME
+    return d if (d / "jsons" / "Speeds.json").exists() else None
+
+
+def _live_mod_sig() -> str | None:
+    """Content signature (sha1) of the live mod's Speeds.json, or None if no live mod.
+    Content-based (not mtime) so a fresh --depth 1 re-clone of identical content does
+    NOT force a needless rebuild on every game start."""
+    d = _live_mod_dir()
+    if d is None:
+        return None
+    try:
+        return hashlib.sha1((d / "jsons" / "Speeds.json").read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def _install_engine_mod() -> None:
+    """Populate ``_ENGINE_DIR/mods`` from the live cloned mod when available, else the
+    bundled copy. Skips ``.git`` from the live --depth 1 clone."""
+    dest_mods = _ENGINE_DIR / "mods"
+    live = _live_mod_dir()
+    if live is not None:
+        (dest_mods / _MOD_NAME).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(live, dest_mods / _MOD_NAME,
+                        dirs_exist_ok=True, ignore=shutil.ignore_patterns(".git"))
+        logger.info("native stats: engine mod from LIVE clone %s", live)
+        return
+    mods_src = _SRC_DIR / "mods"
+    if mods_src.exists():
+        shutil.copytree(mods_src, dest_mods, dirs_exist_ok=True)
+        logger.info("native stats: engine mod from bundled copy (no live mod present)")
+
 _cache: dict[str, dict] = {}
 _CACHE_MAX = 512
 
@@ -107,9 +159,44 @@ def _invalidate_if_jar_changed() -> None:
         _jar_sig = sig
 
 
+def _invalidate_if_mod_changed() -> None:
+    """Rebuild the engine when the LIVE cloned mod's Speeds.json content changes — a
+    newer game version (e.g. 4.6.5) adds speed entries the resident ruleset doesn't
+    know, and income for saves on that version silently comes back empty.
+
+    Only acts when a live mod is actually present: during the brief clone window or
+    after a G&K game wiped the mods dir there is no live mod, and we must keep the
+    resident daemon as-is rather than downgrade it to the stale bundled copy. When the
+    content genuinely changed we reset like the jar swap — the next call rebuilds the
+    engine (now from the fresh live mod) and reboots the daemon."""
+    global _ready, _mod_sig
+    sig = _live_mod_sig()
+    if sig is None or sig == _mod_sig:
+        return
+    with _prep_lock:
+        sig = _live_mod_sig()
+        if sig is None or sig == _mod_sig:  # another thread / vanished mid-check
+            return
+        # Rebuild whenever an engine is already built and the live mod now differs —
+        # covers both an updated live mod AND the bundled→live upgrade (engine built
+        # from bundled while no live mod existed, _mod_sig was None, live now present).
+        if _ready is not None:
+            logger.warning("native stats: live mod Speeds changed %s -> %s; rebuilding",
+                            _mod_sig, sig)
+            with _daemon_lock:
+                _kill_daemon()
+            _cache.clear()
+            try:
+                shutil.rmtree(_ENGINE_DIR)
+            except OSError:
+                pass
+            _ready = None
+        _mod_sig = sig
+
+
 def _prepare() -> bool:
     """Idempotently build the engine working dir (jsons + mods + compiled wrappers)."""
-    global _ready
+    global _ready, _mod_sig
     if _ready is not None:
         return _ready
     with _prep_lock:
@@ -129,10 +216,11 @@ def _prepare() -> bool:
                     for n in z.namelist():
                         if n.startswith("jsons/") and not n.endswith("/"):
                             z.extract(n, _ENGINE_DIR)
-            # Base-ruleset mod ("RekMOD iron"), bundled with the service.
-            mods_src = _SRC_DIR / "mods"
-            if mods_src.exists():
-                shutil.copytree(mods_src, _ENGINE_DIR / "mods", dirs_exist_ok=True)
+            # Base-ruleset mod ("RekMOD iron"): live cloned copy if present, else the
+            # bundled fallback. Remember the live mod's content sig so we rebuild when
+            # a newer game version updates it (see _invalidate_if_mod_changed).
+            _install_engine_mod()
+            _mod_sig = _live_mod_sig()
             # Compile both wrappers against the exact runtime jar (needs a JDK).
             proc = subprocess.run(
                 ["javac", "-cp", str(jar), "-d", str(_ENGINE_DIR),
@@ -292,6 +380,7 @@ def compute_income_native(save_string: str) -> dict | None:
     engine, or None if unavailable/failed. `save_string` is the raw Unciv save
     (base64+gzip). Cached by save hash; warm daemon first, one-shot as fallback."""
     _invalidate_if_jar_changed()
+    _invalidate_if_mod_changed()
     if not save_string or not _prepare():
         return None
     key = hashlib.sha1(save_string.encode("utf-8")).hexdigest()
