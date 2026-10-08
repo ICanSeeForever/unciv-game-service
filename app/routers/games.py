@@ -110,11 +110,15 @@ async def game_info(
         "players": players,
         "speed": game_params.get("speed"),
         # Флаги отображения статистики — для вычисления текущего режима на сайте.
+        # ВАЖНО: отдаём как есть (None при отсутствии), НЕ приводя к bool. Unciv при
+        # сериализации сейва опускает поля, равные его внутреннему дефолту
+        # (showCharts/showRankings по умолчанию true), поэтому отсутствие ключа ≠ false.
+        # Интерпретацию (дефолты Unciv) делает core.stats_mode.mode_from_flags.
         "stats_flags": {
-            "showCharts": bool(game_params.get("showCharts")),
-            "showCivilizationStats": bool(game_params.get("showCivilizationStats")),
-            "showDemographics": bool(game_params.get("showDemographics")),
-            "showRankings": bool(game_params.get("showRankings")),
+            "showCharts": game_params.get("showCharts"),
+            "showCivilizationStats": game_params.get("showCivilizationStats"),
+            "showDemographics": game_params.get("showDemographics"),
+            "showRankings": game_params.get("showRankings"),
         },
         "version": {
             "text": created_with.get("text"),
