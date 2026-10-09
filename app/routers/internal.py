@@ -276,19 +276,28 @@ async def stats(
         if blds:
             buildings_by_civ[cn] = blds
         policies_by_civ[cn] = list(((civ.get("policies") or {}).get("adoptedPolicies")) or [])
-    natural_by_civ: dict[str, list[str]] = {}
+    # Природные чудеса в политике показываем ТОЛЬКО если ОБА игрока их обнаружили
+    # (исследовали хотя бы один тайл чуда — Unciv Tile.exploredBy). Иначе скрываем
+    # совсем: не выдаём ни владельца, ни сам факт чуда — иначе это слило бы
+    # оппоненту, что у соперника есть чудо (и какое). Фильтр на бэке → прямой
+    # запрос API тоже ничего лишнего не вернёт. Владелец чуда = владелец тайла.
+    nw_explorers: dict[str, set[str]] = {}
+    nw_owner: dict[str, str] = {}
     for tile in (save.get("tileMap") or {}).get("tileList") or []:
         if not isinstance(tile, dict):
             continue
         nw = tile.get("naturalWonder")
         if not nw:
             continue
+        nw_explorers.setdefault(nw, set()).update(tile.get("exploredBy") or [])
         pos = tile.get("position") or {}
         owner = owners.get((pos.get("x", 0), pos.get("y", 0)))
-        if owner:
-            lst = natural_by_civ.setdefault(owner, [])
-            if nw not in lst:
-                lst.append(nw)
+        if owner and nw not in nw_owner:
+            nw_owner[nw] = owner
+    natural_by_civ: dict[str, list[str]] = {}
+    for nw, owner in nw_owner.items():
+        if human <= nw_explorers.get(nw, set()):  # оба игрока обнаружили чудо
+            natural_by_civ.setdefault(owner, []).append(nw)
 
     players = []
     for civ_name, inc in income.items():
