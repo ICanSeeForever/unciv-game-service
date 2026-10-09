@@ -17,7 +17,8 @@ from app.game.native_stats import compute_income_native
 from app.game.parser import encode_save
 from app.routers.spectator import (
     _backup_folder, _demographics_by_civ, _has_live_save, _player_civs,
-    _resolve_uuid, _session_statuses, _ENDED_STATUSES,
+    _politics, _resolve_uuid, _session_statuses, _tile_owner_by_position,
+    _ENDED_STATUSES,
 )
 
 router = APIRouter(prefix="/internal", tags=["internal"])
@@ -235,9 +236,11 @@ async def stats(
     host: str | None = Query(default=None, description=_HOST_DESC),
 ) -> dict:
     """Пер-игрок ranking (окно «Статистика») + demographics (окно «Демография»)
-    для live-сейва — те же значения, что игрок видит в игре. Ungated как /score
-    (не палит карту/юниты, только агрегаты рейтинга). Используется плиткой
-    head-to-head на странице дуэли. ``host`` (external) → сейв с внешнего хоста."""
+    + данные окна «Политика» (эра, принятые институты, здания городов для
+    классификации чудес на фронте, природные чудеса, дип-отношения) для
+    live-сейва — те же значения, что игрок видит в игре. Не палит карту/юниты,
+    только агрегаты. Отдаётся ТОЛЬКО для 1v1 (см. гейт ниже). Используется
+    плитками на странице дуэли. ``host`` (external) → сейв с внешнего хоста."""
     try:
         folder = _backup_folder(name)
     except Exception:
@@ -256,6 +259,37 @@ async def stats(
         return {"name": name, "players": []}
     income = compute_income_native(encode_save(save)) or {}
     demo_by_civ = _demographics_by_civ(save)
+
+    # ── Данные окна «Политика» (сырьё; классификация чудес/ветвей/лидера — на
+    # фронте через ruleset-метаданные вьюера) ────────────────────────────────
+    relations = _politics(save)                 # чистый парс сейва
+    owners = _tile_owner_by_position(save)
+    buildings_by_civ: dict[str, list[str]] = {}
+    policies_by_civ: dict[str, list[str]] = {}
+    for civ in save.get("civilizations") or []:
+        cn = civ.get("civName")
+        if not cn:
+            continue
+        blds: list[str] = []
+        for city in civ.get("cities") or []:
+            blds.extend((city.get("cityConstructions") or {}).get("builtBuildings") or [])
+        if blds:
+            buildings_by_civ[cn] = blds
+        policies_by_civ[cn] = list(((civ.get("policies") or {}).get("adoptedPolicies")) or [])
+    natural_by_civ: dict[str, list[str]] = {}
+    for tile in (save.get("tileMap") or {}).get("tileList") or []:
+        if not isinstance(tile, dict):
+            continue
+        nw = tile.get("naturalWonder")
+        if not nw:
+            continue
+        pos = tile.get("position") or {}
+        owner = owners.get((pos.get("x", 0), pos.get("y", 0)))
+        if owner:
+            lst = natural_by_civ.setdefault(owner, [])
+            if nw not in lst:
+                lst.append(nw)
+
     players = []
     for civ_name, inc in income.items():
         if civ_name not in human:
@@ -268,5 +302,19 @@ async def stats(
             "demographics": demo,
             "major": bool((inc or {}).get("major", False)),
             "alive": bool((inc or {}).get("alive", True)),
+            # Политика:
+            "era": str((inc or {}).get("era") or ""),
+            "policies": policies_by_civ.get(civ_name, []),
+            "buildings": buildings_by_civ.get(civ_name, []),
+            "naturalWonders": natural_by_civ.get(civ_name, []),
+            "relations": relations.get(civ_name) or {
+                "wars": [], "friends": [], "denounced": [], "pacts": [], "allies": [],
+            },
         })
-    return {"name": name, "players": players}
+    game_params = save.get("gameParameters") or {}
+    return {
+        "name": name,
+        "players": players,
+        "baseRuleset": game_params.get("baseRuleset"),
+        "mods": [m for m in (game_params.get("mods") or []) if m],
+    }
