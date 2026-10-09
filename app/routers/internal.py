@@ -16,8 +16,8 @@ from app.game.fetcher import get_save_dict
 from app.game.native_stats import compute_income_native
 from app.game.parser import encode_save
 from app.routers.spectator import (
-    _backup_folder, _has_live_save, _player_civs, _resolve_uuid,
-    _session_statuses, _ENDED_STATUSES,
+    _backup_folder, _demographics_by_civ, _has_live_save, _player_civs,
+    _resolve_uuid, _session_statuses, _ENDED_STATUSES,
 )
 
 router = APIRouter(prefix="/internal", tags=["internal"])
@@ -227,3 +227,46 @@ async def score(
         if "Score" in ranking:
             scores.append({"nation": civ_name, "score": int(ranking["Score"])})
     return {"name": name, "scores": scores}
+
+
+@router.get("/stats/{name}", summary="Полная статистика + демография активной игры (движок)")
+async def stats(
+    name: str,
+    host: str | None = Query(default=None, description=_HOST_DESC),
+) -> dict:
+    """Пер-игрок ranking (окно «Статистика») + demographics (окно «Демография»)
+    для live-сейва — те же значения, что игрок видит в игре. Ungated как /score
+    (не палит карту/юниты, только агрегаты рейтинга). Используется плиткой
+    head-to-head на странице дуэли. ``host`` (external) → сейв с внешнего хоста."""
+    try:
+        folder = _backup_folder(name)
+    except Exception:
+        raise HTTPException(status_code=404, detail="game not found")
+    uuid = _resolve_uuid(folder)
+    if not uuid or (not host and not _has_live_save(uuid)):
+        raise HTTPException(status_code=404, detail="no live save")
+    save = await get_save_dict(uuid, host)
+    human = {p["nation"] for p in _roster(save)}
+    # Head-to-head отдаём ТОЛЬКО для 1v1 (ровно два человека по сетапу игры).
+    # Это authoritative-гейт по реальной форме партии: отсекает FFA-турниры —
+    # их тоже метят TOURNAMENT, но людей там больше двух, и тянуть чужую
+    # статистику нельзя. _roster считает всех людей (живых и выбывших), так что
+    # FFA, ужатый выбыванием до двух, всё равно остаётся FFA и закрыт.
+    if len(human) != 2:
+        return {"name": name, "players": []}
+    income = compute_income_native(encode_save(save)) or {}
+    demo_by_civ = _demographics_by_civ(save)
+    players = []
+    for civ_name, inc in income.items():
+        if civ_name not in human:
+            continue
+        ranking = {k: int(v) for k, v in ((inc or {}).get("ranking") or {}).items()}
+        demo = {k: int(v) for k, v in (demo_by_civ.get(civ_name) or {}).items()}
+        players.append({
+            "nation": civ_name,
+            "ranking": ranking,
+            "demographics": demo,
+            "major": bool((inc or {}).get("major", False)),
+            "alive": bool((inc or {}).get("alive", True)),
+        })
+    return {"name": name, "players": players}
