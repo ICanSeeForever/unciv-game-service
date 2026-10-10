@@ -26,6 +26,34 @@ log = logging.getLogger(__name__)
 
 _HOST_DESC = "External Unciv host; when set, read the game via its API not local files"
 
+# Дефолты Unciv для флагов отображения: Unciv при сериализации сейва ОПУСКАЕТ
+# поля, равные своему дефолту (showCharts/showRankings по умолчанию true), поэтому
+# отсутствие ключа ≠ false. Зеркалит core.stats_mode._UNCIV_FLAG_DEFAULTS —
+# дублируется тут, т.к. game-service не импортирует core.
+_UNCIV_FLAG_DEFAULTS = {
+    "showCharts": True, "showRankings": True,
+    "showDemographics": False, "showCivilizationStats": False,
+}
+
+
+def _stats_mode(gp: dict) -> str:
+    """Режим отображения (full/demographics/none) из gameParameters живого сейва —
+    authoritative источник. Зеркалит core.stats_mode.mode_from_flags."""
+    gp = gp or {}
+
+    def flag(key: str) -> bool:
+        v = gp.get(key)
+        return _UNCIV_FLAG_DEFAULTS[key] if v is None else bool(v)
+
+    charts, demo, rankings = flag("showCharts"), flag("showDemographics"), flag("showRankings")
+    if rankings and charts:
+        return "full"
+    if demo:
+        return "demographics"
+    if not charts and not demo and not rankings:
+        return "none"
+    return "demographics"  # DEFAULT_STATS_MODE
+
 
 def _map_type(save: dict) -> str:
     mp = (save.get("tileMap") or {}).get("mapParameters") or {}
@@ -321,6 +349,18 @@ async def stats(
             },
         })
     game_params = save.get("gameParameters") or {}
+    # Defense-in-depth: отдаём ТОЛЬКО то, что разрешает режим отображения игры,
+    # чтобы прямой запрос к API нельзя было использовать в обход плитки (напр.
+    # вытащить полный ranking в игре с режимом «только демография»). Режим —
+    # authoritative, из флагов живого сейва. Поля «Политики» (era/policies/
+    # relations/…) от режима НЕ зависят — это отдельная плитка, их не трогаем.
+    mode = _stats_mode(game_params)
+    if mode != "full":
+        for p in players:
+            p["ranking"] = {}
+    if mode == "none":
+        for p in players:
+            p["demographics"] = {}
     return {
         "name": name,
         "players": players,
