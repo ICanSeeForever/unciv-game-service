@@ -76,12 +76,61 @@ def _snapshots_of(folder: Path) -> list[dict]:
     return out
 
 
-def _extract_backup_save_by_idx(folder: Path, idx: int) -> dict:
-    """Decode the save for a snapshot addressed by its chronological ``idx``."""
+def _rotate_folder(name: str) -> Path | None:
+    """Папка ротации игры (``{backup_path}/rotate/{name}``) — последние ~30
+    пер-ходовых бэкапов. None, если её нет."""
+    path = Path(settings.get_backup_path()) / "rotate" / name.strip("/")
+    return path if path.is_dir() else None
+
+
+def _snapshot_key(turn: int, nation: str) -> tuple[int, str]:
+    """Ключ совпадения бэкапа и ротации: номер хода + нация (дату не учитываем)."""
+    return (turn, nation)
+
+
+def _merged_snapshots(folder: Path, rot: Path) -> list[dict]:
+    """Снапшоты бэкапа + ротации в общей хронологии (mtime). Если в ротации есть
+    файл с тем же ходом и нацией, что и в основном бэкапе, — берём ротацию, а
+    основной снапшот выкидываем. Записи ротации адресуются именем файла
+    (``rfile``): ротация крутится, позиционный idx у неё нестабилен."""
+    rot_items: list[tuple[float, dict]] = []
+    for p in _archives(rot):
+        parts = p.name[:-len(".tar.gz")].split("_")
+        if not parts[0].isdigit():
+            continue
+        rot_items.append((p.stat().st_mtime, {
+            "turn": int(parts[0]),
+            "nation": parts[1] if len(parts) > 1 else "",
+            "ts": "_".join(parts[2:]) if len(parts) > 2 else "",
+            "src": "rotate",
+            "rfile": p.name,
+        }))
+    rot_keys = {_snapshot_key(s["turn"], s["nation"]) for _, s in rot_items}
     archives = _archives(folder)
-    if idx < 0 or idx >= len(archives):
-        raise HTTPException(status_code=404, detail=f"No snapshot #{idx}")
-    archive = archives[idx]
+    main_items: list[tuple[float, dict]] = []
+    for s in _snapshots_of(folder):
+        if _snapshot_key(s["turn"], s["nation"]) in rot_keys:
+            continue
+        main_items.append((archives[s["idx"]].stat().st_mtime, {**s, "src": "backup"}))
+    merged = main_items + rot_items
+    merged.sort(key=lambda x: x[0])
+    return [s for _, s in merged]
+
+
+def _extract_rotate_save(rot: Path | None, rfile: str) -> dict:
+    """Decode a rotation snapshot addressed by its archive filename."""
+    if rot is None:
+        raise HTTPException(status_code=404, detail="No rotation for this game")
+    if "/" in rfile or "\\" in rfile or rfile.startswith(".") \
+            or not rfile.endswith(".tar.gz"):
+        raise HTTPException(status_code=400, detail="bad rotation file")
+    archive = rot / rfile
+    if not archive.is_file():
+        raise HTTPException(status_code=404, detail=f"No rotation snapshot {rfile}")
+    return _decode_archive(archive)
+
+
+def _decode_archive(archive: Path) -> dict:
     try:
         with tarfile.open(archive, "r:gz") as tar:
             member = _save_member(tar)
@@ -91,6 +140,14 @@ def _extract_backup_save_by_idx(folder: Path, idx: int) -> dict:
             return decode_save(f.read().decode("utf-8").strip())
     except (tarfile.TarError, OSError) as e:
         raise HTTPException(status_code=500, detail=f"Bad backup archive: {e}")
+
+
+def _extract_backup_save_by_idx(folder: Path, idx: int) -> dict:
+    """Decode the save for a snapshot addressed by its chronological ``idx``."""
+    archives = _archives(folder)
+    if idx < 0 or idx >= len(archives):
+        raise HTTPException(status_code=404, detail=f"No snapshot #{idx}")
+    return _decode_archive(archives[idx])
 
 
 def _save_member(tar: tarfile.TarFile):
@@ -120,15 +177,7 @@ def _extract_backup_save(folder: Path, turn: int) -> dict:
     archive = next((p for p in _archives(folder) if p.name.split("_", 1)[0] == str(turn)), None)
     if archive is None:
         raise HTTPException(status_code=404, detail=f"No backup for turn {turn}")
-    try:
-        with tarfile.open(archive, "r:gz") as tar:
-            member = _save_member(tar)
-            f = tar.extractfile(member) if member else None
-            if f is None:
-                raise HTTPException(status_code=500, detail="No save inside backup archive")
-            return decode_save(f.read().decode("utf-8").strip())
-    except (tarfile.TarError, OSError) as e:
-        raise HTTPException(status_code=500, detail=f"Bad backup archive: {e}")
+    return _decode_archive(archive)
 
 
 def _has_live_save(uuid: str | None) -> bool:
@@ -1024,17 +1073,25 @@ def _spectate_allowed(name: str, request: Request) -> bool:
 
 
 @browser.get("/games/{name}", summary="Turn list + live-save availability for a game")
-async def game_detail(name: str, request: Request):
+async def game_detail(
+    name: str,
+    request: Request,
+    rotate: bool = Query(False, description="Подмешать снапшоты из ротации "
+                         "(rotate/{name}); совпадающие ход+нация берутся из ротации"),
+):
     if not _spectate_allowed(name, request):
         raise HTTPException(status_code=403, detail="Game is not finished")
     folder = _backup_folder(name)
     uuid = _resolve_uuid(folder)
+    rot = _rotate_folder(name) if rotate else None
     return {
         "name": name,
         "turns": _turns_of(folder),          # legacy: уникальные номера ходов
-        "snapshots": _snapshots_of(folder),  # полная хронология (с рестартами)
+        # полная хронология (с рестартами); с rotate — вместе с ротацией
+        "snapshots": _merged_snapshots(folder, rot) if rot else _snapshots_of(folder),
         "currentGameId": uuid,
         "hasCurrent": _has_live_save(uuid),
+        "hasRotate": _rotate_folder(name) is not None,
     }
 
 
@@ -1045,10 +1102,15 @@ async def game_state(
     turn: str = Query(..., description='Turn number, or "current" for the live save'),
     snap: int | None = Query(None, description="Snapshot idx (chronological, precise "
                              "even after restarts); takes precedence over turn"),
+    rfile: str | None = Query(None, description="Имя архива в ротации (rotate/{name}); "
+                              "приоритетнее snap и turn"),
 ):
     if not _spectate_allowed(name, request):
         raise HTTPException(status_code=403, detail="Game is not finished")
     folder = _backup_folder(name)
+    if rfile:
+        save = _extract_rotate_save(_rotate_folder(name), rfile)
+        return _build_state(save, f"{name}~{rfile}", expose_player_id=True)
     if turn == "current":
         uuid = _resolve_uuid(folder)
         if not _has_live_save(uuid):
