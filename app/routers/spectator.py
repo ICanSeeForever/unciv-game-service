@@ -1109,8 +1109,10 @@ async def game_state(
         raise HTTPException(status_code=403, detail="Game is not finished")
     folder = _backup_folder(name)
     if rfile:
-        save = _extract_rotate_save(_rotate_folder(name), rfile)
-        return _build_state(save, f"{name}~{rfile}", expose_player_id=True)
+        rot = _rotate_folder(name)
+        save = _extract_rotate_save(rot, rfile)
+        return _with_saved_at(_build_state(save, f"{name}~{rfile}", expose_player_id=True),
+                              rot / rfile)
     if turn == "current":
         uuid = _resolve_uuid(folder)
         if not _has_live_save(uuid):
@@ -1119,14 +1121,27 @@ async def game_state(
             save = await get_save_dict(uuid)
         except FileNotFoundError as e:
             raise HTTPException(status_code=404, detail=str(e))
-        return _build_state(save, uuid, expose_player_id=True,
-                            pid_fallback=_civ_player_ids_from_backup(folder))
+        return _with_saved_at(
+            _build_state(save, uuid, expose_player_id=True,
+                         pid_fallback=_civ_player_ids_from_backup(folder)),
+            Path(settings.civ_path) / "MultiplayerFiles" / uuid)
     # Точная адресация по snap-idx (различает одинаковые номера ходов после
     # рестарта); при отсутствии — легаси-путь по номеру хода.
     if snap is not None:
         save = _extract_backup_save_by_idx(folder, snap)
-        return _build_state(save, f"{name}#{snap}", expose_player_id=True)
+        return _with_saved_at(_build_state(save, f"{name}#{snap}", expose_player_id=True),
+                              _archives(folder)[snap])
     if not turn.isdigit():
         raise HTTPException(status_code=400, detail="turn must be a number or 'current'")
     save = _extract_backup_save(folder, int(turn))
-    return _build_state(save, f"{name}@{turn}", expose_player_id=True)
+    archive = next((p for p in _archives(folder) if p.name.split("_", 1)[0] == turn), None)
+    return _with_saved_at(_build_state(save, f"{name}@{turn}", expose_player_id=True), archive)
+
+
+def _with_saved_at(state: dict, path: Path | None) -> dict:
+    """Время сохранения снапшота (mtime файла, epoch-мс) — для подписи в реплее."""
+    try:
+        state["savedAt"] = int(path.stat().st_mtime * 1000) if path else None
+    except OSError:
+        state["savedAt"] = None
+    return state
