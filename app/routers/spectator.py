@@ -1138,6 +1138,62 @@ async def game_state(
     return _with_saved_at(_build_state(save, f"{name}@{turn}", expose_player_id=True), archive)
 
 
+@browser.get("/games/{name}/deaths", summary="Боевые потери до выбранного шага реплея")
+async def game_deaths(
+    name: str,
+    request: Request,
+    turn: str = Query(..., description='Номер хода или "current"'),
+    snap: int | None = Query(None, description="idx снапшота (как в /state)"),
+    rfile: str | None = Query(None, description="архив ротации (как в /state)"),
+):
+    """Логика /deaths (пропавшие боевые юниты между бэкапами), но до выбранного
+    снапшота: итог по владельцам + потери за ход этого снапшота."""
+    import asyncio
+    from app.services import deaths_timeline as dt
+    if not _spectate_allowed(name, request):
+        raise HTTPException(status_code=403, detail="Game is not finished")
+    folder = _backup_folder(name)
+    archives = _archives(folder)
+    last_frame = None
+    if rfile:
+        rot = _rotate_folder(name)
+        _extract_rotate_save(rot, rfile)  # валидация имени/наличия (404/400)
+        sel = rot / rfile
+        cutoff = sel.stat().st_mtime
+        base = [p for p in archives if p.stat().st_mtime < cutoff]
+        tail = [sel]
+    elif turn == "current":
+        base, tail = archives, []
+        uuid = _resolve_uuid(folder)
+        if _has_live_save(uuid):
+            try:
+                last_frame = dt.frame_from_save(await get_save_dict(uuid), None)
+            except FileNotFoundError:
+                last_frame = None
+    else:
+        if snap is not None:
+            if snap < 0 or snap >= len(archives):
+                raise HTTPException(status_code=404, detail=f"No snapshot #{snap}")
+            sel = archives[snap]
+        else:
+            if not turn.isdigit():
+                raise HTTPException(status_code=400, detail="turn must be a number or 'current'")
+            sel = next((p for p in archives if p.name.split("_", 1)[0] == turn), None)
+            if sel is None:
+                raise HTTPException(status_code=404, detail=f"No backup for turn {turn}")
+        cutoff = sel.stat().st_mtime
+        base = [p for p in archives if p.stat().st_mtime < cutoff and p != sel]
+        tail = [sel]
+
+    def _frames():
+        fr = [dt.archive_frame(p) for p in base + tail]
+        if last_frame is not None:
+            fr.append(last_frame)
+        return dt.compute(fr)
+
+    return await asyncio.get_running_loop().run_in_executor(None, _frames)
+
+
 def _with_saved_at(state: dict, path: Path | None) -> dict:
     """Время сохранения снапшота (mtime файла, epoch-мс) — для подписи в реплее."""
     try:
