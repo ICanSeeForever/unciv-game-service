@@ -112,6 +112,14 @@ async def game_info(
         # Рулсет игры — для импорта уже существующей игры (rekmod vs G&K).
         "base_ruleset": game_params.get("baseRuleset"),
         "mods": game_params.get("mods") or [],
+        # Слоты игроков из параметров игры (как задумано при создании): человек,
+        # сдавшийся/выбывший, у civ может стать AI, а слот остаётся — по нему
+        # импорт определяет дуэль и ростер.
+        "slots": [
+            {"civ": sp.get("chosenCiv"), "player_id": sp.get("playerId"),
+             "type": sp.get("playerType") or "AI"}
+            for sp in (game_params.get("players") or []) if isinstance(sp, dict)
+        ],
         # Флаги отображения статистики — для вычисления текущего режима на сайте.
         # ВАЖНО: отдаём как есть (None при отсутствии), НЕ приводя к bool. Unciv при
         # сериализации сейва опускает поля, равные его внутреннему дефолту
