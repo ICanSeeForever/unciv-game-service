@@ -109,6 +109,9 @@ async def game_info(
         "created_at": created_at,
         "players": players,
         "speed": game_params.get("speed"),
+        # Рулсет игры — для импорта уже существующей игры (rekmod vs G&K).
+        "base_ruleset": game_params.get("baseRuleset"),
+        "mods": game_params.get("mods") or [],
         # Флаги отображения статистики — для вычисления текущего режима на сайте.
         # ВАЖНО: отдаём как есть (None при отсутствии), НЕ приводя к bool. Unciv при
         # сериализации сейва опускает поля, равные его внутреннему дефолту
