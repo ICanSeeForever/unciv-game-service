@@ -7,7 +7,10 @@ strip: a cheap, engine-free roster/turn summary of games currently in progress.
 """
 from __future__ import annotations
 
+import json
 import logging
+import time
+from pathlib import Path
 
 from fastapi import APIRouter, Body, HTTPException, Query
 
@@ -113,16 +116,52 @@ async def _summarize_game(name: str, status: str, host: str | None = None) -> di
     }
 
 
+_CORE_DATA = Path("/data/core")  # data core-service, смонтирована read-only
+_INTERNAL_HOST = "https://unciv.icanseeforever.com"
+_EXTERNAL_TTL = 120.0  # сек; не дёргаем uncivserver на каждый запрос списка
+_external_cache: dict[str, tuple[float, dict | None]] = {}
+
+
+def _external_host(name: str) -> str | None:
+    """Хост игры, если она живёт на внешнем сервере (EXTERNAL/HOST из
+    game_params core). None — наша игра или параметров нет."""
+    try:
+        params = json.loads((_CORE_DATA / name / "game_params.json").read_text("utf-8"))
+    except Exception:
+        return None
+    host = str(params.get("HOST") or "").rstrip("/")
+    if not host or host == _INTERNAL_HOST:
+        return None
+    if params.get("EXTERNAL") or not params.get("SYNC"):
+        return host
+    return None
+
+
+async def _summarize_external(name: str, status: str, host: str) -> dict | None:
+    now = time.monotonic()
+    hit = _external_cache.get(name)
+    if hit and now - hit[0] < _EXTERNAL_TTL:
+        return hit[1]
+    g = await _summarize_game(name, status, host)
+    _external_cache[name] = (now, g)
+    return g
+
+
 @router.get("/active-summary", summary="Cheap roster/turn summary of in-progress games")
 async def active_summary() -> dict:
     """For every non-ended game with a live save: name, map type, current turn,
-    whose turn it is, and the human roster. No native engine (no score/income)."""
+    whose turn it is, and the human roster. No native engine (no score/income).
+    Игры на внешнем хосте (без локального live-сейва) читаем через его API."""
     statuses = _session_statuses()
     games: list[dict] = []
     for name, status in statuses.items():
         if status in _ENDED_STATUSES:
             continue
         g = await _summarize_game(name, status)
+        if g is None:
+            host = _external_host(name)
+            if host:
+                g = await _summarize_external(name, status, host)
         if g is not None:
             games.append(g)
     return {"games": games}
