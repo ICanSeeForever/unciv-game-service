@@ -65,6 +65,29 @@ async def list_games():
 # GET /games/{game_id}/info  — lightweight: currentPlayer + turns
 # ---------------------------------------------------------------------------
 
+def _resolve_slots(save: dict) -> list[dict]:
+    """Слоты gameParameters.players. У слота «Random» нация в сейве опущена —
+    подставляем оставшиеся мажоры из civilizations (по порядку), с их playerId."""
+    from app.routers.spectator import _major_civ_names
+
+    raw = [sp for sp in ((save.get("gameParameters") or {}).get("players") or [])
+           if isinstance(sp, dict)]
+    explicit = {sp.get("chosenCiv") for sp in raw}
+    majors = _major_civ_names(save) or set()
+    spare = [c for c in save.get("civilizations") or []
+             if c.get("civName") in majors and c.get("civName") not in explicit]
+    out = []
+    for sp in raw:
+        civ, pid, ptype = sp.get("chosenCiv"), sp.get("playerId"), sp.get("playerType")
+        if (not civ or civ == "Random") and spare:
+            c = spare.pop(0)
+            civ = c.get("civName")
+            pid = pid or c.get("playerId")
+            ptype = ptype or c.get("playerType")
+        out.append({"civ": civ, "player_id": pid, "type": ptype or "AI"})
+    return out
+
+
 @router.get(
     "/{game_id}/info",
     summary="Game info: current player, turns, speed, version, victory data, and full player list",
@@ -115,11 +138,7 @@ async def game_info(
         # Слоты игроков из параметров игры (как задумано при создании): человек,
         # сдавшийся/выбывший, у civ может стать AI, а слот остаётся — по нему
         # импорт определяет дуэль и ростер.
-        "slots": [
-            {"civ": sp.get("chosenCiv"), "player_id": sp.get("playerId"),
-             "type": sp.get("playerType") or "AI"}
-            for sp in (game_params.get("players") or []) if isinstance(sp, dict)
-        ],
+        "slots": _resolve_slots(save),
         # Флаги отображения статистики — для вычисления текущего режима на сайте.
         # ВАЖНО: отдаём как есть (None при отсутствии), НЕ приводя к bool. Unciv при
         # сериализации сейва опускает поля, равные его внутреннему дефолту
