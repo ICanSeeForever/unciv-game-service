@@ -331,8 +331,21 @@ def _major_civ_names(save: dict) -> set[str] | None:
     players = (save.get("gameParameters") or {}).get("players") or []
     majors = {
         p.get("chosenCiv") for p in players
-        if isinstance(p, dict) and p.get("chosenCiv") and p.get("chosenCiv") != "Spectator"
+        if isinstance(p, dict) and p.get("chosenCiv")
+        and p.get("chosenCiv") not in ("Spectator", "Random")
     }
+    # Слот с «Random» (в сейве chosenCiv тогда опущен) не называет нацию — её
+    # знают только сами civilizations: человек (playerType Human) или мажор
+    # с историей статистики (statsHistory пишется только мажорам).
+    slots = sum(1 for p in players
+                if isinstance(p, dict) and p.get("chosenCiv") != "Spectator")
+    if len(majors) < slots:
+        for civ in save.get("civilizations") or []:
+            name = civ.get("civName")
+            if not name or name in ("Spectator", "Barbarians"):
+                continue
+            if civ.get("playerType") == "Human" or civ.get("statsHistory"):
+                majors.add(name)
     return majors or None
 
 
