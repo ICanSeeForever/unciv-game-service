@@ -76,6 +76,7 @@ def _resolve_slots(save: dict) -> list[dict]:
     majors = _major_civ_names(save) or set()
     spare = [c for c in save.get("civilizations") or []
              if c.get("civName") in majors and c.get("civName") not in explicit]
+    by_name = {c.get("civName"): c for c in save.get("civilizations") or []}
     out = []
     for sp in raw:
         civ, pid, ptype = sp.get("chosenCiv"), sp.get("playerId"), sp.get("playerType")
@@ -84,6 +85,9 @@ def _resolve_slots(save: dict) -> list[dict]:
             civ = c.get("civName")
             pid = pid or c.get("playerId")
             ptype = ptype or c.get("playerType")
+        elif not pid:
+            # playerId в слоте тоже бывает опущен — берём у самой цивилизации.
+            pid = by_name.get(civ, {}).get("playerId")
         out.append({"civ": civ, "player_id": pid, "type": ptype or "AI"})
     return out
 
