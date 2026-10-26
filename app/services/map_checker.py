@@ -110,6 +110,15 @@ def check_map(
         and p.get("chosenCiv")
         and p.get("chosenCiv") not in ("Spectator", "Random")
     ]
+    # Слоты «Random» нацию в сейве не пишут — добираем людей из civilizations.
+    human_slots = sum(1 for p in gp_players if p.get("playerType") == "Human"
+                      and p.get("chosenCiv") != "Spectator")
+    if len(human_civs) < human_slots:
+        for civ in file_dict.get("civilizations", []):
+            name = civ.get("civName")
+            if (civ.get("playerType") == "Human" and name
+                    and name not in ("Spectator", "Barbarians") and name not in human_civs):
+                human_civs.append(name)
     if human_civs:
         game_nations = human_civs
     else:
