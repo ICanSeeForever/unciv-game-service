@@ -285,16 +285,35 @@ async def score(
         raise HTTPException(status_code=404, detail="no live save")
     save = await get_save_dict(uuid, host)
     # только нации-игроки (люди), как в списке на карточке — без городов-государств
-    human = {p["nation"] for p in _roster(save)}
+    roster = _roster(save)
     income = compute_income_native(encode_save(save)) or {}
-    scores = []
-    for civ_name, inc in income.items():
-        if civ_name not in human:
+    return {"name": name, "scores": _visible_scores(save, roster, income)}
+
+
+def _visible_scores(save: dict, roster: list[dict], income: dict) -> list[dict]:
+    """Счёт игрока раскрываем, только если он встретил всех остальных живых
+    игроков (иначе цифра палит, что где-то есть ещё не найденная нация).
+    Порядок: сначала раскрытые по убыванию счёта, ниже скрытые (score=None)
+    в порядке ходов."""
+    alive = {p["nation"] for p in roster if p["alive"]}
+    met_by_civ = {
+        civ.get("civName"): set((civ.get("diplomacy") or {}).keys())
+        for civ in save.get("civilizations") or []
+    }
+    shown: list[dict] = []
+    hidden: list[dict] = []
+    for p in roster:  # roster идёт в порядке ходов
+        nation = p["nation"]
+        ranking = (income.get(nation) or {}).get("ranking") or {}
+        if "Score" not in ranking:
             continue
-        ranking = (inc or {}).get("ranking") or {}
-        if "Score" in ranking:
-            scores.append({"nation": civ_name, "score": int(ranking["Score"])})
-    return {"name": name, "scores": scores}
+        others = alive - {nation}
+        if others <= met_by_civ.get(nation, set()):
+            shown.append({"nation": nation, "score": int(ranking["Score"])})
+        else:
+            hidden.append({"nation": nation, "score": None})
+    shown.sort(key=lambda s: s["score"], reverse=True)
+    return shown + hidden
 
 
 @router.get("/stats/{name}", summary="Полная статистика + демография активной игры (движок)")
