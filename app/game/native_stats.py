@@ -82,6 +82,35 @@ def _live_mod_sig() -> str | None:
         return None
 
 
+_MOD_REPO = "https://github.com/DeStup/RekMOD-iron.git"
+_MOD_BRANCH = "iron2"
+
+
+def _clone_engine_mod(dest: Path) -> bool:
+    """--depth 1 clone of the mod straight into the engine dir. False on any failure
+    (no network, timeout) — caller falls back to the bundled copy."""
+    tmp = dest.parent / (dest.name + ".clone")
+    shutil.rmtree(tmp, ignore_errors=True)
+    try:
+        subprocess.run(
+            ["git", "clone", "--quiet", "--depth", "1", "--branch", _MOD_BRANCH,
+             _MOD_REPO, str(tmp)],
+            check=True, capture_output=True, timeout=120,
+        )
+        if not (tmp / "jsons" / "Speeds.json").exists():
+            return False
+        shutil.rmtree(tmp / ".git", ignore_errors=True)
+        shutil.rmtree(dest, ignore_errors=True)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp.rename(dest)
+        return True
+    except Exception:
+        logger.warning("native stats: GitHub clone of the mod failed", exc_info=True)
+        return False
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def _install_engine_mod() -> None:
     """Populate ``_ENGINE_DIR/mods`` from the live cloned mod when available, else the
     bundled copy. Skips ``.git`` from the live --depth 1 clone."""
@@ -92,6 +121,12 @@ def _install_engine_mod() -> None:
         shutil.copytree(live, dest_mods / _MOD_NAME,
                         dirs_exist_ok=True, ignore=shutil.ignore_patterns(".git"))
         logger.info("native stats: engine mod from LIVE clone %s", live)
+        return
+    # Живого клона нет (например, контейнер только что пересоздан деплоем и ни одна
+    # игра ещё не стартовала) — тянем мод с GitHub сами, иначе движок соберётся из
+    # устаревшей вшитой копии и не узнает новые скорости → «счёт недоступен».
+    if _clone_engine_mod(dest_mods / _MOD_NAME):
+        logger.info("native stats: engine mod from fresh GitHub clone")
         return
     mods_src = _SRC_DIR / "mods"
     if mods_src.exists():
