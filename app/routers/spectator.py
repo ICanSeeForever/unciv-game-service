@@ -6,6 +6,7 @@ read-only projection of the save instead of shipping the game-service API key
 to the web tier. Games are addressed by unguessable UUIDs.
 """
 import functools
+from httpx import HTTPStatusError, RequestError
 import json
 import os
 import re
@@ -185,6 +186,46 @@ def _has_live_save(uuid: str | None) -> bool:
     if not uuid:
         return False
     return (Path(settings.civ_path) / "MultiplayerFiles" / uuid).is_file()
+
+
+def _current_source(folder: Path) -> tuple[str | None, str | None]:
+    """Session UUID/host; synced games prefer local, archives are legacy fallback.
+
+    An external-only game's stale local copy must never override its HOST.
+    """
+    try:
+        params = json.loads((_CORE_SESSIONS_PATH.parent / folder.name /
+                             "game_params.json").read_text("utf-8"))
+    except (OSError, ValueError):
+        params = {}
+    uuid = str(params.get("GAME_ID") or "").strip()
+    if not _GAME_ID_RE.fullmatch(uuid):
+        uuid = _resolve_uuid(folder)
+    host = str(params.get("HOST") or "").strip().rstrip("/")
+    if host == "https://unciv.icanseeforever.com":
+        host = ""
+    if params.get("SYNC"):
+        if _has_live_save(uuid):
+            return uuid, None
+        host = host or "https://uncivserver.xyz"
+    return uuid, host or None
+
+
+async def _load_current(folder: Path) -> tuple[dict, str, Path | None]:
+    uuid, host = _current_source(folder)
+    if not uuid:
+        raise HTTPException(status_code=404, detail="No live save for this game")
+    try:
+        save = await get_save_dict(uuid, host=host)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="No live save for this game")
+    except HTTPStatusError as exc:
+        status = 404 if exc.response.status_code == 404 else 502
+        raise HTTPException(status_code=status, detail="External live save unavailable")
+    except RequestError:
+        raise HTTPException(status_code=502, detail="External game host unavailable")
+    path = None if host else Path(settings.civ_path) / "MultiplayerFiles" / uuid
+    return save, uuid, path
 
 
 def _tile_owner_by_position(save: dict) -> dict[tuple, str]:
@@ -1095,7 +1136,7 @@ async def game_detail(
     if not _spectate_allowed(name, request):
         raise HTTPException(status_code=403, detail="Game is not finished")
     folder = _backup_folder(name)
-    uuid = _resolve_uuid(folder)
+    uuid, host = _current_source(folder)
     rot = _rotate_folder(name) if rotate else None
     return {
         "name": name,
@@ -1103,7 +1144,7 @@ async def game_detail(
         # полная хронология (с рестартами); с rotate — вместе с ротацией
         "snapshots": _merged_snapshots(folder, rot) if rot else _snapshots_of(folder),
         "currentGameId": uuid,
-        "hasCurrent": _has_live_save(uuid),
+        "hasCurrent": bool(uuid and (host or _has_live_save(uuid))),
         "hasRotate": _rotate_folder(name) is not None,
     }
 
@@ -1127,17 +1168,10 @@ async def game_state(
         return _with_saved_at(_build_state(save, f"{name}~{rfile}", expose_player_id=True),
                               rot / rfile)
     if turn == "current":
-        uuid = _resolve_uuid(folder)
-        if not _has_live_save(uuid):
-            raise HTTPException(status_code=404, detail="No live save for this game")
-        try:
-            save = await get_save_dict(uuid)
-        except FileNotFoundError as e:
-            raise HTTPException(status_code=404, detail=str(e))
+        save, uuid, path = await _load_current(folder)
         return _with_saved_at(
             _build_state(save, uuid, expose_player_id=True,
-                         pid_fallback=_civ_player_ids_from_backup(folder)),
-            Path(settings.civ_path) / "MultiplayerFiles" / uuid)
+                         pid_fallback=_civ_player_ids_from_backup(folder)), path)
     # Точная адресация по snap-idx (различает одинаковые номера ходов после
     # рестарта); при отсутствии — легаси-путь по номеру хода.
     if snap is not None:
@@ -1177,12 +1211,8 @@ async def game_deaths(
         tail = [sel]
     elif turn == "current":
         base, tail = archives, []
-        uuid = _resolve_uuid(folder)
-        if _has_live_save(uuid):
-            try:
-                last_frame = dt.frame_from_save(await get_save_dict(uuid), None)
-            except FileNotFoundError:
-                last_frame = None
+        save, _, _ = await _load_current(folder)
+        last_frame = dt.frame_from_save(save, None)
     else:
         if snap is not None:
             if snap < 0 or snap >= len(archives):
