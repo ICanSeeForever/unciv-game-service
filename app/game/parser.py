@@ -40,7 +40,12 @@ def build_preview_from_save(save: dict) -> dict:
         civs.append({k: c[k] for k in _PREVIEW_CIV_KEYS if c.get(k) is not None})
     out: dict = {}
     for k in _PREVIEW_TOP_KEYS:
-        out[k] = civs if k == "civilizations" else save.get(k)
+        value = civs if k == "civilizations" else save.get(k)
+        # Unciv omits default-valued fields (e.g. turns=0) in saves. Explicit
+        # null is not equivalent: remote servers deserialize non-null fields
+        # while processing preview uploads and can reject them with HTTP 500.
+        if value is not None:
+            out[k] = value
     return out
 
 

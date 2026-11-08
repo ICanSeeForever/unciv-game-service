@@ -31,3 +31,20 @@ def test_preview_failure_not_silent(monkeypatch):
     monkeypatch.setattr(games,'store_preview',AsyncMock(side_effect=RuntimeError('unavailable')))
     with pytest.raises(RuntimeError):
         asyncio.run(games.patch_difficulty('876bb5a6-4544-424b-b70c-d13ace74857e',games.PatchDifficultyRequest(difficulty='Deity')))
+
+
+def test_turn_zero_preview_omits_default_fields(monkeypatch):
+    # Actual initial Unciv saves omit turns=0, rather than serializing it.
+    save = {'difficulty': 'Immortal', 'currentPlayer': 'Rome',
+            'gameParameters': {}, 'civilizations': []}
+    monkeypatch.setattr(games, 'get_save_dict', AsyncMock(return_value=save))
+    monkeypatch.setattr(games, 'store_save', AsyncMock())
+    preview = AsyncMock()
+    monkeypatch.setattr(games, 'store_preview', preview)
+    asyncio.run(games.patch_difficulty(
+        '876bb5a6-4544-424b-b70c-d13ace74857e',
+        games.PatchDifficultyRequest(difficulty='Immortal-iron', host='https://uncivserver.xyz')))
+    result = decode_save(preview.await_args.args[1])
+    assert 'turns' not in result
+    assert all(value is not None for value in result.values())
+    assert result['difficulty'] == 'Immortal-iron'
