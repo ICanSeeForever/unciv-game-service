@@ -1624,6 +1624,28 @@ async def game_save_raw(game_id: str,
         raise HTTPException(status_code=404, detail=str(e))
 
 
+class PatchDifficultyRequest(BaseModel):
+    difficulty: str
+    host: str | None = None
+
+
+@router.post("/{game_id}/patch-difficulty", summary="Patch difficulty in save and regenerate preview")
+async def patch_difficulty(game_id: str, body: PatchDifficultyRequest):
+    _validate_game_id(game_id)
+    if not body.difficulty.strip():
+        raise HTTPException(status_code=400, detail="empty difficulty")
+    try:
+        save = await get_save_dict(game_id, body.host)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    previous = save.get("difficulty")
+    save["difficulty"] = body.difficulty
+    await store_save(game_id, encode_save(save), host=body.host)
+    from app.game.parser import build_preview_from_save
+    await store_preview(game_id, encode_save(build_preview_from_save(save)), host=body.host)
+    return {"ok": True, "difficulty": body.difficulty, "previous": previous}
+
+
 class PatchSpeedRequest(BaseModel):
     speed: str
     host: str | None = None
