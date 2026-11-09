@@ -1640,6 +1640,7 @@ async def patch_difficulty(game_id: str, body: PatchDifficultyRequest):
         raise HTTPException(status_code=404, detail=str(exc))
     previous = save.get("difficulty")
     save["difficulty"] = body.difficulty
+    save.setdefault("gameParameters", {})["difficulty"] = body.difficulty
     await store_save(game_id, encode_save(save), host=body.host)
     from app.game.parser import build_preview_from_save
     await store_preview(game_id, encode_save(build_preview_from_save(save)), host=body.host)

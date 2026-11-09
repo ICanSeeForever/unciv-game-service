@@ -6,10 +6,13 @@ from app.routers import games
 from app.game.parser import decode_save
 
 @pytest.mark.parametrize('host',[None,'https://uncivserver.xyz'])
-def test_patch_only_difficulty_and_preview(monkeypatch,host):
+@pytest.mark.parametrize('nested_difficulty',[None,'Prince'])
+def test_patch_only_difficulty_and_preview(monkeypatch,host,nested_difficulty):
     save={'difficulty':'Immortal','turns':23,'currentPlayer':'Rome',
           'gameParameters':{'speed':'Solo-iron'},'civilizations':[{'civName':'Rome','gold':999}],
           'tileMap':{'tiles':[1,2]}}
+    if nested_difficulty is not None:
+        save['gameParameters']['difficulty'] = nested_difficulty
     original=deepcopy(save)
     monkeypatch.setattr(games,'get_save_dict',AsyncMock(return_value=save))
     store=AsyncMock();preview=AsyncMock()
@@ -20,8 +23,10 @@ def test_patch_only_difficulty_and_preview(monkeypatch,host):
     assert result['previous']=='Immortal'
     saved=decode_save(store.await_args.args[1]);pv=decode_save(preview.await_args.args[1])
     original['difficulty']='Deity'
+    original['gameParameters']['difficulty']='Deity'
     assert saved==original
     assert pv['difficulty']=='Deity' and pv['turns']==23
+    assert pv['gameParameters']==original['gameParameters']
     assert store.await_args.kwargs['host']==preview.await_args.kwargs['host']==host
 
 
@@ -48,3 +53,4 @@ def test_turn_zero_preview_omits_default_fields(monkeypatch):
     assert 'turns' not in result
     assert all(value is not None for value in result.values())
     assert result['difficulty'] == 'Immortal-iron'
+    assert result['gameParameters']['difficulty'] == 'Immortal-iron'
