@@ -12,11 +12,13 @@ import os
 import re
 import tarfile
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from pydantic import BaseModel, Field
 
 from app.config import settings
-from app.game.fetcher import get_save_dict
+from app.game.fetcher import get_save_dict, make_single_player
 from app.game.parser import decode_save, encode_save
 from app.game.native_stats import compute_income_native
 
@@ -24,10 +26,74 @@ router = APIRouter(prefix="/games", tags=["spectator"])
 
 # Second router (different prefix) for the game/turn browser the web viewer uses.
 browser = APIRouter(prefix="/spectator", tags=["spectator"])
+exports = APIRouter(prefix="/internal/replay-export", tags=["spectator"])
 
 _GAME_ID_RE = re.compile(r"^[0-9a-f-]{32,}$", re.IGNORECASE)
 _RESERVED_FOLDERS = {"trash", "rotate"}
 
+
+class ReplayExportSource(BaseModel):
+    name: str | None = None
+    game_id: str | None = None
+    turn: str = "current"
+    snap: int | None = Field(default=None, ge=0)
+    rfile: str | None = None
+    nations: list[str] = Field(default_factory=list)
+
+
+async def _replay_export_save(source: ReplayExportSource) -> dict:
+    """Read the same source selectors as the viewer, without remapping/mutating it."""
+    if bool(source.name) == bool(source.game_id):
+        raise HTTPException(status_code=400, detail="Specify name or game_id")
+    if source.game_id:
+        if not _GAME_ID_RE.fullmatch(source.game_id):
+            raise HTTPException(status_code=400, detail="Invalid game_id")
+        try:
+            return await get_save_dict(source.game_id)
+        except FileNotFoundError:
+            if not settings.uncivserver_url:
+                raise HTTPException(status_code=404, detail="Save unavailable")
+            try:
+                return await get_save_dict(source.game_id, host=settings.uncivserver_url)
+            except FileNotFoundError:
+                raise HTTPException(status_code=404, detail="Save unavailable")
+    folder = _backup_folder(source.name)
+    # Match game_state's precedence, including duplicate turn numbers after restarts.
+    if source.rfile:
+        return _extract_rotate_save(_rotate_folder(source.name), source.rfile)
+    if source.turn == "current":
+        save, _, _ = await _load_current(folder)
+        return save
+    if source.snap is not None:
+        return _extract_backup_save_by_idx(folder, source.snap)
+    if not source.turn.isdigit():
+        raise HTTPException(status_code=400, detail="Invalid turn")
+    return _extract_backup_save(folder, int(source.turn))
+
+
+@exports.post("/{kind}", summary="Replay files for the admin-only core endpoint")
+async def replay_export(kind: Literal["save", "single", "civs"], source: ReplayExportSource):
+    # This internal router requires the service API key; core enforces the admin role.
+    try:
+        save = await _replay_export_save(source)
+    except HTTPStatusError as exc:
+        raise HTTPException(status_code=404 if exc.response.status_code == 404 else 502,
+                            detail="Save unavailable")
+    except RequestError:
+        raise HTTPException(status_code=502, detail="Game host unavailable")
+    if kind == "civs":
+        return {"civs": [c["civName"] for c in save.get("civilizations", [])
+                         if c.get("playerType") == "Human" and c.get("civName")
+                         and c["civName"] != "Barbarians"]}
+    if kind == "single":
+        if not source.nations:
+            raise HTTPException(status_code=400, detail="no_nations")
+        try:
+            save = make_single_player(save, source.nations)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Unknown nations")
+    gid = str(save.get("gameId") or "")
+    return {"save": save, "filename": gid if _GAME_ID_RE.fullmatch(gid) else "replay"}
 
 def _backup_folder(name: str) -> Path:
     """Validated path to a per-game backup folder (guards against traversal)."""

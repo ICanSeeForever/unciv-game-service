@@ -7,6 +7,7 @@ from app.routers.backups import router as backups_router
 from app.routers.games import router as games_router
 from app.routers.spectator import router as spectator_router
 from app.routers.spectator import browser as spectator_browser_router
+from app.routers.spectator import exports as replay_export_router
 from app.routers.tasks import router as tasks_router
 from app.services.task_manager import start_cleanup_task
 from app.game.native_stats import prewarm as prewarm_native_stats
@@ -71,6 +72,7 @@ app.include_router(backups_router, dependencies=_auth)
 # now behind api_key like the rest.
 app.include_router(spectator_router, dependencies=_auth)
 app.include_router(spectator_browser_router, dependencies=_auth)
+app.include_router(replay_export_router, dependencies=_auth)
 # Internal-only (api_key): homepage active-games summary. Not proxied publicly by
 # core (which only forwards /spectator and /games), so it stays core-to-service.
 from app.routers.internal import router as internal_router
