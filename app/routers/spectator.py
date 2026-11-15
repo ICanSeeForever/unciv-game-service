@@ -891,6 +891,39 @@ def _pending_trades(save: dict) -> dict:
     return out
 
 
+def _notifications(save: dict) -> dict:
+    """Only the selected snapshot's saved journal; never reconstruct from future saves."""
+    def items(raw):
+        result = []
+        for n in raw or []:
+            if not isinstance(n, dict):
+                continue
+            locations = []
+            for action in n.get("actions") or []:
+                for kind, field in (("LocationAction", "location"), ("CityAction", "city")):
+                    point = (action.get(kind) or {}).get(field)
+                    if isinstance(point, dict) and all(isinstance(point.get(k), (int, float)) for k in ("x", "y")):
+                        point = {"x": point["x"], "y": point["y"]}
+                        if point not in locations:
+                            locations.append(point)
+            result.append({"text": n.get("text", ""), "category": n.get("category", "General"),
+                           "icons": n.get("icons") or [], "locations": locations})
+        return result
+    out = {}
+    for civ in save.get("civilizations") or []:
+        name = civ.get("civName")
+        if not name or name in {"Spectator", _BARBARIANS}:
+            continue
+        current = items(civ.get("notifications"))
+        out[name] = {"current": current,
+                     "atStart": civ.get("notificationCountAtStartTurn", len(current)),
+                     "history": sorted([
+                         {"turn": log.get("turn", 0), "notifications": items(log.get("notifications"))}
+                         for log in civ.get("notificationsLog") or []
+                     ], key=lambda log: log["turn"], reverse=True)}
+    return out
+
+
 def _politics(save: dict) -> dict:
     """Дип-отношения каждой цивы для окна «Политика» (порт Unciv
     GlobalPoliticsOverviewTable.getPoliticsOfCivTable): войны, объявления дружбы,
@@ -1219,6 +1252,7 @@ def _build_state(save: dict, game_id: str, *, expose_player_id: bool = False,
         "politics": _politics(save),
         "trades": _active_trades(save),
         "pendingTrades": _pending_trades(save),
+        "notifications": _notifications(save),
     }
 
 
