@@ -1120,6 +1120,7 @@ def _build_state(save: dict, game_id: str, *, expose_player_id: bool = False,
         # Real per-tile yield (owning city's exact stats) for the yields overlay;
         # neutral tiles keep their base yield (computed on the frontend).
         tile_yields = (income or {}).get("__tileYields__") or {}
+        tile_yields_no_resource = (income or {}).get("__tileYieldsWithoutResource__") or {}
         if tile_yields:
             for tile in tiles:
                 ry = tile_yields.get(f"{tile.get('x')},{tile.get('y')}")
@@ -1127,6 +1128,9 @@ def _build_state(save: dict, game_id: str, *, expose_player_id: bool = False,
                     tile["realYield"] = {
                         k: int(v) for k, v in ry.items()
                     }
+                no_resource = tile_yields_no_resource.get(f"{tile.get('x')},{tile.get('y')}")
+                if no_resource is not None:
+                    tile["realYieldWithoutResource"] = {k: int(v) for k, v in no_resource.items()}
         for unit in units:
             if (unit.get("owner"), f"{unit.get('x')},{unit.get('y')}") in embarked:
                 unit["embarked"] = True

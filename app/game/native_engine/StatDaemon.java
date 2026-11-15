@@ -205,6 +205,35 @@ public class StatDaemon {
         }
         sb.append("}");
 
+        // Same owning-city calculation with only the resource removed. Used by
+        // replay perspectives that have not researched the resource reveal tech.
+        // Restore even on failure; never mutate the loaded game permanently.
+        sb.append(",\"__tileYieldsWithoutResource__\":{");
+        boolean nrf = true;
+        for (com.unciv.logic.map.tile.Tile t : gi.getTileMap().getTileList()) {
+            City oc = t.getOwningCity();
+            String resource = t.getResource();
+            if (oc == null || resource == null) continue;
+            Stats s;
+            try {
+                t.setTileResource((String) null, true);
+                s = t.getStats().getTileStats(oc, oc.getCiv());
+            } catch (Throwable e) { continue; }
+            finally { t.setTileResource(resource, true); }
+            if (!nrf) sb.append(",");
+            nrf = false;
+            sb.append("\"").append(t.getPosition().getX()).append(",")
+              .append(t.getPosition().getY()).append("\":{")
+              .append("\"food\":").append(Math.round(s.getFood())).append(",")
+              .append("\"production\":").append(Math.round(s.getProduction())).append(",")
+              .append("\"gold\":").append(Math.round(s.getGold())).append(",")
+              .append("\"science\":").append(Math.round(s.getScience())).append(",")
+              .append("\"culture\":").append(Math.round(s.getCulture())).append(",")
+              .append("\"faith\":").append(Math.round(s.getFaith())).append(",")
+              .append("\"happiness\":").append(Math.round(s.getHappiness())).append("}");
+        }
+        sb.append("}");
+
         sb.append("}");
         return sb.toString();
     }
