@@ -829,6 +829,38 @@ def _diplomacy(save: dict) -> dict:
     return {n: sorted(s) for n, s in war.items()}
 
 
+def _active_trades(save: dict) -> dict:
+    """Accepted diplomacy trades, from each nation's own perspective, never requests."""
+    cities = {city.get("id"): city.get("name", "")
+              for civ in save.get("civilizations") or [] for city in civ.get("cities") or []}
+    out = {}
+    for civ in save.get("civilizations") or []:
+        name = civ.get("civName")
+        if not name or name in {"Spectator", _BARBARIANS}:
+            continue
+        trades = []
+        for other, dm in (civ.get("diplomacy") or {}).items():
+            if not isinstance(dm, dict):
+                continue
+            for trade in dm.get("trades") or []:
+                sides = {}
+                for side in ("ourOffers", "theirOffers"):
+                    sides[side] = [
+                        {"name": (cities.get(offer.get("name"), "Non-existent city")
+                                  if offer.get("type") == "City" else offer.get("name", "")),
+                         "type": offer.get("type", "Gold"),
+                         "amount": offer.get("amount", 1), "duration": offer.get("duration", -1)}
+                        for offer in trade.get(side) or []
+                    ]
+                # Immediate offers belong to the accepted bargain too. Keep them
+                # alongside ongoing terms, but don't resurrect fully expired trades.
+                if any(o["duration"] > 0 for offers in sides.values() for o in offers):
+                    trades.append({"otherCiv": other, **sides})
+        trades.sort(key=lambda t: max((o["duration"] for o in t["ourOffers"]), default=0))
+        out[name] = trades
+    return out
+
+
 def _politics(save: dict) -> dict:
     """Дип-отношения каждой цивы для окна «Политика» (порт Unciv
     GlobalPoliticsOverviewTable.getPoliticsOfCivTable): войны, объявления дружбы,
@@ -1155,6 +1187,7 @@ def _build_state(save: dict, game_id: str, *, expose_player_id: bool = False,
         "currentPlayer": save.get("currentPlayer"),
         "diplomacy": _diplomacy(save),
         "politics": _politics(save),
+        "trades": _active_trades(save),
     }
 
 
