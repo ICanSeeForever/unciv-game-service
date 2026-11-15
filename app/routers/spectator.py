@@ -829,6 +829,19 @@ def _diplomacy(save: dict) -> dict:
     return {n: sorted(s) for n, s in war.items()}
 
 
+def _trade_sides(trade: dict, cities: dict) -> dict:
+    sides = {}
+    for side in ("ourOffers", "theirOffers"):
+        sides[side] = [
+            {"name": (cities.get(offer.get("name"), "Non-existent city")
+                      if offer.get("type") == "City" else offer.get("name", "")),
+             "type": offer.get("type", "Gold"),
+             "amount": offer.get("amount", 1), "duration": offer.get("duration", -1)}
+            for offer in trade.get(side) or []
+        ]
+    return sides
+
+
 def _active_trades(save: dict) -> dict:
     """Accepted diplomacy trades, from each nation's own perspective, never requests."""
     cities = {city.get("id"): city.get("name", "")
@@ -843,21 +856,38 @@ def _active_trades(save: dict) -> dict:
             if not isinstance(dm, dict):
                 continue
             for trade in dm.get("trades") or []:
-                sides = {}
-                for side in ("ourOffers", "theirOffers"):
-                    sides[side] = [
-                        {"name": (cities.get(offer.get("name"), "Non-existent city")
-                                  if offer.get("type") == "City" else offer.get("name", "")),
-                         "type": offer.get("type", "Gold"),
-                         "amount": offer.get("amount", 1), "duration": offer.get("duration", -1)}
-                        for offer in trade.get(side) or []
-                    ]
+                sides = _trade_sides(trade, cities)
                 # Immediate offers belong to the accepted bargain too. Keep them
                 # alongside ongoing terms, but don't resurrect fully expired trades.
                 if any(o["duration"] > 0 for offers in sides.values() for o in offers):
                     trades.append({"otherCiv": other, **sides})
         trades.sort(key=lambda t: max((o["duration"] for o in t["ourOffers"]), default=0))
         out[name] = trades
+    return out
+
+
+def _pending_trades(save: dict) -> dict:
+    """Outgoing proposals awaiting acceptance, as in Unciv TradesOverviewTab.
+
+    Requests live on the recipient and their trade is recipient-relative.
+    """
+    civs = save.get("civilizations") or []
+    names = {c.get("civName") for c in civs} - {None, "Spectator", _BARBARIANS}
+    aliases = {c.get("civID", c.get("civName")): c.get("civName") for c in civs}
+    cities = {city.get("id"): city.get("name", "") for c in civs for city in c.get("cities") or []}
+    out = {name: [] for name in names}
+    for recipient in civs:
+        other = recipient.get("civName")
+        if other not in names:
+            continue
+        for request in recipient.get("tradeRequests") or []:
+            sender = aliases.get(request.get("requestingCiv"), request.get("requestingCiv"))
+            if sender not in out:
+                continue
+            sides = _trade_sides(request.get("trade") or {}, cities)
+            out[sender].append({"otherCiv": other,
+                                "ourOffers": sides["theirOffers"],
+                                "theirOffers": sides["ourOffers"]})
     return out
 
 
@@ -1188,6 +1218,7 @@ def _build_state(save: dict, game_id: str, *, expose_player_id: bool = False,
         "diplomacy": _diplomacy(save),
         "politics": _politics(save),
         "trades": _active_trades(save),
+        "pendingTrades": _pending_trades(save),
     }
 
 

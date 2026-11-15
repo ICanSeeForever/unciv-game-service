@@ -50,3 +50,29 @@ def test_state_exports_trades(monkeypatch):
     save = {'civilizations': [{'civName': 'Rome', 'diplomacy': {'Greece': {'trades': [
         {'ourOffers': [{'name': 'Iron', 'type': 'Strategic_Resource', 'duration': 4}]}]}}}]}
     assert _build_state(save, 'test')['trades'] == _active_trades(save)
+
+
+def test_pending_requests_are_reversed_for_sender_and_not_duplicated():
+    from app.routers.spectator import _pending_trades
+    request = {'requestingCiv': 'Mysore', 'trade': {
+        'ourOffers': [{'name': 'Cotton', 'type': 'Luxury_Resource', 'duration': 25}],
+        'theirOffers': [{'name': 'Dyes', 'type': 'Luxury_Resource', 'duration': 25}]}}
+    save = {'civilizations': [{'civName': 'Mysore'}, {'civName': 'Poland', 'tradeRequests': [request]}]}
+    before = deepcopy(save)
+    result = _pending_trades(save)
+    assert result['Poland'] == []
+    assert result['Mysore'][0]['otherCiv'] == 'Poland'
+    assert result['Mysore'][0]['ourOffers'][0]['name'] == 'Dyes'
+    assert result['Mysore'][0]['theirOffers'][0]['name'] == 'Cotton'
+    assert _active_trades(save)['Mysore'] == []
+    assert save == before
+
+
+def test_pending_immediate_only_requests_and_civ_ids():
+    from app.routers.spectator import _pending_trades
+    save = {'civilizations': [{'civName': 'Rome', 'civID': 'rome-id'}, {
+        'civName': 'Poland', 'tradeRequests': [{'requestingCiv': 'rome-id', 'trade': {
+            'theirOffers': [{'name': 'Gold', 'amount': 40}]}}]}]}
+    assert _pending_trades(save)['Rome'][0]['ourOffers'][0]['amount'] == 40
+    save['civilizations'][1]['tradeRequests'] = []
+    assert _pending_trades(save)['Rome'] == []
